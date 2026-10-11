@@ -17,11 +17,14 @@ chrome sphere.
 |---|---|
 | Triggers | Flippers |
 | A or X (hold, then let go) | Plunger |
-| Grips | Nudge left / right (both grips: nudge up) |
+| Grip with your hand on a side rail | Grab the table to move, lift and turn it |
+| Grip anywhere else | Nudge left / right (both grips: nudge up) |
 | B | Pause |
 | Y | New game |
 | Left stick up/down | Table height |
 | Left stick click | Move the table in front of you |
+
+If VR stutters when you turn your head, tick **VR performance mode** on the start screen.
 | Hand tracking | Pinch to flip, pinch with both hands to launch |
 
 On a computer: Z and / flip, Space is the plunger, X . and ↑ nudge, F2 new game, P pause.

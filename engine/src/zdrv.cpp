@@ -1,4 +1,5 @@
 #include "pch.h"
+void scp_mark_dirty(const void* target, int x, int y, int w, int h);
 #include "zdrv.h"
 #include "winmain.h"
 
@@ -31,6 +32,7 @@ int zmap_header_type::pad(int width)
 
 void zdrv::fill(zmap_header_type* zmap, int width, int height, int xOff, int yOff, uint16_t fillWord)
 {
+	scp_mark_dirty(zmap, xOff, yOff, width, height);
 	auto dstPtr = &zmap->ZPtr1[zmap->Stride * yOff + xOff];
 	for (int y = height; y > 0; --y)
 	{
@@ -47,6 +49,8 @@ void zdrv::paint(int width, int height, gdrv_bitmap8* dstBmp, int dstBmpXOff, in
                  int dstZMapXOff, int dstZMapYOff, gdrv_bitmap8* srcBmp, int srcBmpXOff, int srcBmpYOff,
                  zmap_header_type* srcZMap, int srcZMapXOff, int srcZMapYOff)
 {
+	scp_mark_dirty(dstBmp, dstBmpXOff, dstBmpYOff, width, height);
+	scp_mark_dirty(dstZMap, dstZMapXOff, dstZMapYOff, width, height);
 	assertm(srcBmp->BitmapType != BitmapTypes::Spliced, "Wrong bmp type");
 
 	auto srcPtr = &srcBmp->BmpBufPtr1[srcBmp->Stride * srcBmpYOff + srcBmpXOff];
@@ -80,6 +84,8 @@ void zdrv::paint_flat(int width, int height, gdrv_bitmap8* dstBmp, int dstBmpXOf
                       zmap_header_type* zMap, int dstZMapXOff, int dstZMapYOff, gdrv_bitmap8* srcBmp, int srcBmpXOff,
                       int srcBmpYOff, uint16_t depth)
 {
+	scp_mark_dirty(dstBmp, dstBmpXOff, dstBmpYOff, width, height);
+	scp_mark_dirty(zMap, dstZMapXOff, dstZMapYOff, width, height);
 	assertm(srcBmp->BitmapType != BitmapTypes::Spliced, "Wrong bmp type");
 
 	auto dstPtr = &dstBmp->BmpBufPtr1[dstBmp->Stride * dstBmpYOff + dstBmpXOff];

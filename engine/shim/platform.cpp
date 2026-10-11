@@ -366,3 +366,26 @@ extern "C" EXPORT(scp_debug) float* scp_debug()
 
 extern int g_renderSerial;
 extern "C" EXPORT(scp_render_serial) int scp_render_serial() { return g_renderSerial; }
+
+// Union of every rectangle written to the composed table picture or its depth map since the host last
+// asked, so the host can upload just that patch to the GPU instead of the whole frame.
+static int g_dirty[4] = {1 << 30, 1 << 30, -1, -1};
+void scp_mark_dirty(const void* target, int x, int y, int w, int h)
+{
+	if (w <= 0 || h <= 0) return;
+	if (target != render::vscreen && target != render::zscreen) return;
+	if (x < g_dirty[0]) g_dirty[0] = x;
+	if (y < g_dirty[1]) g_dirty[1] = y;
+	if (x + w > g_dirty[2]) g_dirty[2] = x + w;
+	if (y + h > g_dirty[3]) g_dirty[3] = y + h;
+}
+
+// Returns [x0, y0, x1, y1] (x1 < x0 when nothing changed) and resets the record.
+extern "C" EXPORT(scp_take_dirty) int* scp_take_dirty()
+{
+	static int out[4];
+	memcpy(out, g_dirty, sizeof out);
+	g_dirty[0] = g_dirty[1] = 1 << 30;
+	g_dirty[2] = g_dirty[3] = -1;
+	return out;
+}

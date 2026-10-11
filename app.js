@@ -28,8 +28,9 @@ renderer.setPixelRatio(Math.min(devicePixelRatio, 2));
 renderer.setSize(innerWidth, innerHeight);
 renderer.xr.enabled = true;
 renderer.xr.setReferenceSpaceType('local-floor');
-renderer.xr.setFoveation(0.7);
 const IS_QUEST = /OculusBrowser|Quest|Pacific/i.test(navigator.userAgent);
+// Fixed foveation: full detail where you look (the table), cheaper at the edges of the lenses
+renderer.xr.setFoveation(IS_QUEST ? 1 : 0.5);
 renderer.outputColorSpace = THREE.SRGBColorSpace;
 $('stage').appendChild(renderer.domElement);
 
@@ -51,25 +52,28 @@ scene.add(sun);
 buildRoom();
 const envMap = buildEnvMap();
 
+const gripByHand = {};
 // Simple controller shapes so you can see your hands
 for (let i = 0; i < 2; i++) {
   const grip = renderer.xr.getControllerGrip(i);
   const m = new THREE.Group();
-  const handle = new THREE.Mesh(new THREE.CylinderGeometry(0.016, 0.02, 0.1, 16), new THREE.MeshStandardMaterial({ color: 0x2a2840, roughness: 0.6 }));
+  const handle = new THREE.Mesh(new THREE.CylinderGeometry(0.016, 0.02, 0.1, 16), new THREE.MeshLambertMaterial({ color: 0x2a2840 }));
   handle.rotation.x = -0.9;
   handle.position.set(0, -0.015, 0.03);
-  const ring = new THREE.Mesh(new THREE.TorusGeometry(0.035, 0.006, 8, 24), new THREE.MeshStandardMaterial({ color: 0x8d86ff, emissive: 0x2a2266 }));
+  const ring = new THREE.Mesh(new THREE.TorusGeometry(0.035, 0.006, 8, 24), new THREE.MeshLambertMaterial({ color: 0x8d86ff, emissive: 0x2a2266 }));
   ring.position.set(0, 0.01, -0.02);
   ring.rotation.x = 0.4;
   m.add(handle, ring);
   grip.add(m);
+  grip.addEventListener('connected', (e) => { grip.userData.hand = e.data.handedness; gripByHand[e.data.handedness] = grip; });
+  grip.addEventListener('disconnected', () => { if (gripByHand[grip.userData.hand] === grip) delete gripByHand[grip.userData.hand]; });
   scene.add(grip);
 }
 
 // Hand tracking: draw each tracked joint as a small glowing bead so you can see your hands
 const hands = [0, 1].map((i) => { const h = renderer.xr.getHand(i); scene.add(h); return h; });
 const jointGeo = new THREE.SphereGeometry(1, 10, 8);
-const jointMat = new THREE.MeshStandardMaterial({ color: 0xc9c4ff, emissive: 0x3a2f99, roughness: 0.4 });
+const jointMat = new THREE.MeshLambertMaterial({ color: 0xc9c4ff, emissive: 0x3a2f99 });
 function updateHands() {
   for (const h of hands) {
     if (!h.joints) continue;
@@ -89,7 +93,7 @@ function updateHands() {
 function buildRoom() {
   const floor = new THREE.Mesh(
     new THREE.CircleGeometry(8, 64),
-    new THREE.MeshStandardMaterial({ color: 0x14111f, roughness: 0.9 })
+    new THREE.MeshBasicMaterial({ color: 0x110e1b })
   );
   floor.rotation.x = -Math.PI / 2;
   world.add(floor);
@@ -133,12 +137,14 @@ function buildEnvMap() {
 }
 
 // ---------------------------------------------------------------- the machine
-let playfield, colorTex, zsTex, bgzTex, ballMeshes = [], shadowMeshes = [], panelCanvas, panelTex, tableGroup;
+let playfield, colorTex, zsTex, bgzTex, ballMeshes = [], shadowMeshes = [], panelCanvas, tableGroup;
 
 function buildMachine(info, eng) {
   const W = info.width, H = info.height;
   const vsStride = eng.x.scp_vscreen_stride();
   const zsStride = eng.x.scp_zscreen_stride();
+  state.vsStride = vsStride;
+  state.zsStride = zsStride;
 
   colorTex = new THREE.DataTexture(eng.pixels(W, H), vsStride, H, THREE.RGBAFormat, THREE.UnsignedByteType);
   colorTex.flipY = false;
@@ -356,11 +362,49 @@ function radialTexture() {
   return new THREE.CanvasTexture(c);
 }
 
+// Merge a group's static meshes that share a material into one mesh each: same look, far fewer draw calls
+function mergeStatic(group) {
+  const byMat = new Map();
+  for (const ch of group.children) {
+    if (!ch.isMesh || ch.userData.dynamic) continue;
+    if (!byMat.has(ch.material)) byMat.set(ch.material, []);
+    byMat.get(ch.material).push(ch);
+  }
+  for (const [mat, list] of byMat) {
+    if (list.length < 2) continue;
+    const parts = list.map((m) => {
+      m.updateMatrix();
+      const g = m.geometry.index ? m.geometry.toNonIndexed() : m.geometry.clone();
+      g.applyMatrix4(m.matrix);
+      return g;
+    });
+    const n = parts.reduce((t, g) => t + g.attributes.position.count, 0);
+    const pos = new Float32Array(n * 3), nor = new Float32Array(n * 3), uv = new Float32Array(n * 2);
+    let o = 0;
+    for (const g of parts) {
+      const c = g.attributes.position.count;
+      pos.set(g.attributes.position.array, o * 3);
+      nor.set(g.attributes.normal.array, o * 3);
+      if (g.attributes.uv) uv.set(g.attributes.uv.array, o * 2);
+      o += c;
+      g.dispose();
+    }
+    const geo = new THREE.BufferGeometry();
+    geo.setAttribute('position', new THREE.BufferAttribute(pos, 3));
+    geo.setAttribute('normal', new THREE.BufferAttribute(nor, 3));
+    geo.setAttribute('uv', new THREE.BufferAttribute(uv, 2));
+    geo.computeBoundingSphere();
+    for (const m of list) group.remove(m);
+    group.add(new THREE.Mesh(geo, mat));
+  }
+}
+
 function buildCabinet(machine, b, cx, cz) {
   const w = b.maxX - b.minX, len = b.maxZ - b.minZ;
-  const body = new THREE.MeshStandardMaterial({ color: 0x15132e, roughness: 0.5, metalness: 0.3 });
-  const trim = new THREE.MeshStandardMaterial({ color: 0x6f7488, roughness: 0.32, metalness: 0.9, envMap, envMapIntensity: 0.8 });
-  const dark = new THREE.MeshStandardMaterial({ color: 0x08080c, roughness: 0.8 });
+  // Lambert shading: plenty for painted wood and brushed metal, and far cheaper than PBR on a Quest 2
+  const body = new THREE.MeshLambertMaterial({ color: 0x1d1a3e, emissive: 0x0c0a22 });
+  const trim = new THREE.MeshLambertMaterial({ color: 0x8a8fa6, emissive: 0x1a1a24, envMap, reflectivity: 0.35 });
+  const dark = new THREE.MeshLambertMaterial({ color: 0x08080c });
 
   // Everything that follows the playfield tilt
   const tilt = machine.children[0];
@@ -381,15 +425,21 @@ function buildCabinet(machine, b, cx, cz) {
   const sideArt = makeSideArt();
   for (const sx of [-1, 1]) {
     const art = new THREE.Mesh(new THREE.PlaneGeometry(len + wall * 2, sideH * 0.92),
-      new THREE.MeshStandardMaterial({ map: sideArt, roughness: 0.45, metalness: 0.2, emissive: 0xffffff, emissiveMap: sideArt, emissiveIntensity: 0.35 }));
+      new THREE.MeshLambertMaterial({ map: sideArt, emissive: 0xffffff, emissiveMap: sideArt, emissiveIntensity: 0.45 }));
     art.position.set(sx * (w / 2 + wall + 0.0008), sideH / 2 - depthBelow, 0);
     art.rotation.y = sx * Math.PI / 2;
     tub.add(art);
   }
   const neon = (color) => new THREE.MeshBasicMaterial({ color, toneMapped: false });
-  const neonA = neon(0x9a7bff), neonB = neon(0x37e0ff);
-  box(0.006, 0.006, len + wall * 2, neonA, -w / 2 - wall - 0.003, -depthBelow + 0.004, 0);
-  box(0.006, 0.006, len + wall * 2, neonA, w / 2 + wall + 0.003, -depthBelow + 0.004, 0);
+  const neonB = neon(0x37e0ff);
+  const sideNeon = { left: neon(0x9a7bff), right: neon(0x9a7bff) };
+  box(0.006, 0.006, len + wall * 2, sideNeon.left, -w / 2 - wall - 0.003, -depthBelow + 0.004, 0);
+  box(0.006, 0.006, len + wall * 2, sideNeon.right, w / 2 + wall + 0.003, -depthBelow + 0.004, 0);
+  // A brighter rail along the top of each side: lights up when your hand can grab that side
+  for (const [side, sx] of [['left', -1], ['right', 1]]) {
+    box(0.004, 0.004, len - 0.2, sideNeon[side], sx * (w / 2 + wall + 0.003), sideH - depthBelow - 0.006, -0.1);
+  }
+  state.cab = { w, len, sideH, depthBelow, wall, tub, sideNeon };
   box(w + wall * 2, 0.006, 0.006, neonB, 0, -depthBelow + 0.004, len / 2 + wall + 0.003);
 
   // Front panel: a lit coin door
@@ -413,7 +463,7 @@ function buildCabinet(machine, b, cx, cz) {
   const btnGeo = new THREE.CylinderGeometry(0.014, 0.014, 0.012, 20);
   btnGeo.rotateZ(Math.PI / 2);
   state.flipButtons = [-1, 1].map((s) => {
-    const m = new THREE.Mesh(btnGeo, new THREE.MeshStandardMaterial({ color: 0xff3366, emissive: 0x330011, roughness: 0.4 }));
+    const m = new THREE.Mesh(btnGeo, new THREE.MeshLambertMaterial({ color: 0xff3366, emissive: 0x330011 }));
     m.position.set(s * (w / 2 + wall + 0.004), sideH - depthBelow - 0.05, len / 2 - 0.08);
     tub.add(m);
     return m;
@@ -436,14 +486,23 @@ function buildCabinet(machine, b, cx, cz) {
   panelCanvas = document.createElement('canvas');
   panelCanvas.width = PANEL.w * 2;
   panelCanvas.height = PANEL.h * 2;
-  panelTex = new THREE.CanvasTexture(panelCanvas);
-  panelTex.colorSpace = THREE.SRGBColorSpace;
   const glassH = 0.62, glassW = glassH * (PANEL.w / PANEL.h);
   const bbW = Math.max(w + wall * 2, glassW + 0.12), bbH = glassH + 0.1;
   const backbox = new THREE.Group();
   const shell = new THREE.Mesh(new THREE.BoxGeometry(bbW, bbH, 0.16), body);
   backbox.add(shell);
-  const glass = new THREE.Mesh(new THREE.PlaneGeometry(glassW, glassH), new THREE.MeshBasicMaterial({ map: panelTex, toneMapped: false }));
+  // The backglass reads the score panel straight out of the table texture, so it costs no extra uploads
+  const glassMat = new THREE.ShaderMaterial({
+    glslVersion: THREE.GLSL3,
+    uniforms: {
+      uColor: { value: colorTex },
+      uRect: { value: new THREE.Vector4(PANEL.x / state.vsStride, PANEL.y / state.info.height, PANEL.w / state.vsStride, PANEL.h / state.info.height) },
+    },
+    vertexShader: `out vec2 vUv; void main() { vUv = uv; gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0); }`,
+    fragmentShader: `precision highp float; uniform sampler2D uColor; uniform vec4 uRect; in vec2 vUv; out vec4 fragColor;
+      void main() { vec2 t = uRect.xy + vec2(vUv.x, 1.0 - vUv.y) * uRect.zw; fragColor = linearToOutputTexel(vec4(texture(uColor, t).bgr, 1.0)); }`,
+  });
+  const glass = new THREE.Mesh(new THREE.PlaneGeometry(glassW, glassH), glassMat);
   glass.position.z = 0.081;
   backbox.add(glass);
   // Glowing frame around the backglass
@@ -454,10 +513,7 @@ function buildCabinet(machine, b, cx, cz) {
     f.position.set(fx, fy, 0.082);
     backbox.add(f);
   }
-  // Light from the backbox washing over the cabinet
-  const bbLight = new THREE.PointLight(0x9a8cff, 0.6, 1.6, 2);
-  bbLight.position.set(0, -bbH / 2, 0.25);
-  backbox.add(bbLight);
+
   const trimTop = new THREE.Mesh(new THREE.BoxGeometry(bbW + 0.01, 0.02, 0.17), trim);
   trimTop.position.y = bbH / 2;
   backbox.add(trimTop);
@@ -466,6 +522,9 @@ function buildCabinet(machine, b, cx, cz) {
   backbox.add(neck);
   backbox.position.set(0, backY - depthBelow + sideH + 0.06 + bbH / 2, -len / 2 * Math.cos(TILT) - 0.09);
   machine.add(backbox);
+  mergeStatic(tub);
+  mergeStatic(door);
+  mergeStatic(backbox);
 
   // Soft glow on the floor under the machine (its height is set in placeMachineDefault)
   const glow = new THREE.Mesh(new THREE.PlaneGeometry(w + 0.9, len + 0.9),
@@ -494,22 +553,24 @@ function buildCabinet(machine, b, cx, cz) {
   help.visible = false;
   machine.add(help);
   state.helpCard = help;
+  mergeStatic(machine); // the four legs
 }
 
 function makeHelpCard() {
   const c = document.createElement('canvas');
-  c.width = 512; c.height = 450;
+  c.width = 512; c.height = 492;
   const x = c.getContext('2d');
   x.fillStyle = 'rgba(12,10,30,0.86)';
-  x.fillRect(0, 0, 512, 450);
-  x.strokeStyle = '#7f7cff'; x.lineWidth = 4; x.strokeRect(2, 2, 508, 446);
+  x.fillRect(0, 0, 512, 492);
+  x.strokeStyle = '#7f7cff'; x.lineWidth = 4; x.strokeRect(2, 2, 508, 488);
   x.fillStyle = '#fff'; x.font = 'bold 34px system-ui, sans-serif';
   x.fillText('Controls', 24, 50);
   x.font = '25px system-ui, sans-serif';
   const lines = [
     ['Triggers', 'Flippers'],
     ['A or X (hold)', 'Pull plunger, let go to launch'],
-    ['Grips', 'Nudge (both grips: nudge up)'],
+    ['Grip on a side rail', 'Grab: move and turn the table'],
+    ['Grip elsewhere', 'Nudge (both grips: nudge up)'],
     ['B', 'Pause'],
     ['Y', 'New game'],
     ['Left stick ↑↓', 'Table height'],
@@ -517,14 +578,14 @@ function makeHelpCard() {
     ['Hands only', 'Pinch to flip, both to launch'],
   ];
   x.fillStyle = '#8f8cc0'; x.font = '21px system-ui, sans-serif';
-  x.fillText('Shows while paused. Too many nudges will tilt!', 24, 425);
+  x.fillText('Shows while paused. Too many nudges will tilt!', 24, 467);
   lines.forEach(([a, b], i) => {
     x.fillStyle = '#b9b6ff'; x.fillText(a, 24, 100 + i * 42);
     x.fillStyle = '#e8e8f0'; x.fillText(b, 230, 100 + i * 42);
   });
   const t = new THREE.CanvasTexture(c);
   t.colorSpace = THREE.SRGBColorSpace;
-  return new THREE.Mesh(new THREE.PlaneGeometry(0.4, 0.352), new THREE.MeshBasicMaterial({ map: t, transparent: true, toneMapped: false }));
+  return new THREE.Mesh(new THREE.PlaneGeometry(0.4, 0.384), new THREE.MeshBasicMaterial({ map: t, transparent: true, toneMapped: false }));
 }
 
 function placeMachineDefault() {
@@ -566,7 +627,6 @@ function drawPanel() {
   ctx.imageSmoothingEnabled = false;
   ctx.drawImage(tmp, 0, 0, panelCanvas.width, panelCanvas.height);
 
-  panelTex.needsUpdate = true;
   updateFlatHud();
 }
 
@@ -692,7 +752,9 @@ function pollXR() {
   }
 
   const L = sources.left, R = sources.right;
-  const gl = !!(L && L.now.grip), gr = !!(R && R.now.grip);
+  updateGrab(L, R);
+  const gl = !!(L && L.now.grip && state.gripMode.left === 'nudge');
+  const gr = !!(R && R.now.grip && state.gripMode.right === 'nudge');
   const stick = R ? R.now : {};
   const nudge = { left: (gl && !gr) || !!stick.sl, right: (gr && !gl) || !!stick.sr, up: (gl && gr) || !!stick.su };
   const was = state.nudgeHeld || {};
@@ -717,6 +779,99 @@ function updateShake(dt) {
   const k = Math.max(0, 1 - sh.t / 180) * Math.sin(sh.t / 180 * Math.PI);
   tilt.position.set(sh.dx * 0.006 * k, 0, -sh.dz * 0.008 * k);
   if (sh.t >= 180) state.shake = null;
+}
+
+// ---------------------------------------------------------------- grabbing the table
+// Squeeze a grip with your hand on a side rail to hold the table. One hand carries and turns it like
+// any object you'd pick up; two hands move it and turn it between them. It always stays level.
+const _hp = new THREE.Vector3(), _lp = new THREE.Vector3(), _hq = new THREE.Quaternion(), _fw = new THREE.Vector3();
+const _a = new THREE.Vector3(), _b = new THREE.Vector3(), _off = new THREE.Vector3();
+const YAXIS = new THREE.Vector3(0, 1, 0);
+state.gripMode = { left: null, right: null };
+state.grabHands = new Set();
+state.hover = { left: null, right: null };
+
+function handPos(hand, out) {
+  const g = gripByHand[hand];
+  return g ? g.getWorldPosition(out) : null;
+}
+function handYaw(hand) {
+  const g = gripByHand[hand];
+  g.getWorldQuaternion(_hq);
+  _fw.set(0, 0, -1).applyQuaternion(_hq);
+  return Math.atan2(-_fw.x, -_fw.z);
+}
+// Which side rail (if any) a hand is close enough to grab
+function sideInReach(hand) {
+  const c = state.cab;
+  if (!c || !handPos(hand, _hp)) return null;
+  const p = c.tub.worldToLocal(_lp.copy(_hp));
+  const edge = c.w / 2 + c.wall, ax = Math.abs(p.x);
+  if (ax < edge - 0.07 || ax > edge + 0.13) return null;
+  if (p.z < -c.len / 2 - 0.08 || p.z > c.len / 2 - 0.22) return null; // not the front, where you play
+  if (p.y < -c.depthBelow - 0.12 || p.y > c.sideH - c.depthBelow + 0.16) return null;
+  return p.x < 0 ? 'left' : 'right';
+}
+
+function anchorGrab() {
+  const hs = [...state.grabHands];
+  const g = { hands: hs, rigPos: rig.position.clone(), rigYaw: rig.rotation.y };
+  if (hs.length === 1) {
+    g.p0 = handPos(hs[0], new THREE.Vector3());
+    g.yaw0 = handYaw(hs[0]);
+  } else if (hs.length === 2) {
+    handPos('left', _a); handPos('right', _b);
+    g.p0 = _a.clone().add(_b).multiplyScalar(0.5);
+    g.yaw0 = Math.atan2(-(_b.z - _a.z), _b.x - _a.x);
+  }
+  state.grab = hs.length ? g : null;
+}
+
+function updateGrab(L, R) {
+  for (const [hand, h] of [['left', L], ['right', R]]) {
+    const down = !!(h && h.now.grip), was = !!(h && h.prev.grip);
+    const reach = h && gripByHand[hand] ? sideInReach(hand) : null;
+    if (reach && reach !== state.hover[hand] && !down && h) pulse(h.src, 0.15, 12);
+    state.hover[hand] = reach;
+    if (down && !was) {
+      if (reach) {
+        state.gripMode[hand] = 'grab';
+        state.grabHands.add(hand);
+        pulse(h.src, 0.5, 40);
+        anchorGrab();
+      } else state.gripMode[hand] = 'nudge';
+    } else if (!down && state.gripMode[hand]) {
+      if (state.gripMode[hand] === 'grab') { state.grabHands.delete(hand); anchorGrab(); }
+      state.gripMode[hand] = null;
+    }
+  }
+  // Drop a grab if a controller vanished mid-grab
+  for (const hand of state.grabHands) if (!gripByHand[hand]) { state.grabHands.delete(hand); anchorGrab(); }
+
+  const g = state.grab;
+  if (g) {
+    let p, yaw;
+    if (g.hands.length === 1) {
+      p = handPos(g.hands[0], _a);
+      yaw = handYaw(g.hands[0]);
+    } else {
+      handPos('left', _a); handPos('right', _b);
+      yaw = Math.atan2(-(_b.z - _a.z), _b.x - _a.x);
+      p = _a.add(_b).multiplyScalar(0.5);
+    }
+    const dyaw = yaw - g.yaw0;
+    _off.copy(g.rigPos).sub(g.p0).applyAxisAngle(YAXIS, dyaw);
+    rig.position.copy(p).add(_off);
+    rig.position.y = THREE.MathUtils.clamp(rig.position.y, -0.6, 0.8);
+    rig.rotation.y = g.rigYaw + dyaw;
+  }
+
+  // Rails: purple normally, white when in reach, cyan while held
+  const c = state.cab;
+  if (c) for (const side of ['left', 'right']) {
+    const hover = state.hover.left === side || state.hover.right === side;
+    c.sideNeon[side].color.setHex(state.grabHands.size && hover ? 0x37e0ff : hover ? 0xffffff : 0x9a7bff);
+  }
 }
 
 // A small visible bump of the cabinet when you nudge it
@@ -754,7 +909,7 @@ function updateSign() {
   const sg = state.sign;
   if (!sg) return;
   const xr = renderer.xr.isPresenting;
-  const handsOnly = xr && [...(renderer.xr.getSession()?.inputSources || [])].some((s) => s.hand);
+  const handsOnly = xr && state.handsOnly;
   let text = '';
   if (state.paused) text = 'Paused \u00b7 press B to carry on';
   else if (state.gameOver) text = 'Game over \u00b7 press Y for a new game';
@@ -791,24 +946,43 @@ function pulse(src, strength, ms) {
 
 // ---------------------------------------------------------------- per-frame update
 const tmpV = new THREE.Vector3();
+// Upload just the changed rectangle of a texture straight from the engine's memory.
+// Full-frame uploads stall the Quest's GPU; a small patch is close to free.
+const gl = renderer.getContext();
+function uploadPatch(tex, data, stride, x0, y0, x1, y1, format, type) {
+  const props = renderer.properties.get(tex);
+  if (!props.__webglTexture || props.__version !== tex.version) { tex.image.data = data; tex.needsUpdate = true; return; }
+  renderer.state.activeTexture(gl.TEXTURE0);
+  renderer.state.bindTexture(gl.TEXTURE_2D, props.__webglTexture);
+  gl.pixelStorei(gl.UNPACK_FLIP_Y_WEBGL, false);
+  gl.pixelStorei(gl.UNPACK_PREMULTIPLY_ALPHA_WEBGL, false);
+  gl.pixelStorei(gl.UNPACK_ALIGNMENT, 1);
+  gl.pixelStorei(gl.UNPACK_ROW_LENGTH, stride);
+  gl.pixelStorei(gl.UNPACK_SKIP_PIXELS, x0);
+  gl.pixelStorei(gl.UNPACK_SKIP_ROWS, y0);
+  gl.texSubImage2D(gl.TEXTURE_2D, 0, x0, y0, x1 - x0, y1 - y0, format, type, data);
+  gl.pixelStorei(gl.UNPACK_ROW_LENGTH, 0);
+  gl.pixelStorei(gl.UNPACK_SKIP_PIXELS, 0);
+  gl.pixelStorei(gl.UNPACK_SKIP_ROWS, 0);
+}
+
 function updateTable() {
   const eng = state.engine, info = state.info;
-  // Only send the table picture to the GPU when the game actually changed it
-  const serial = eng.x.scp_render_serial();
-  const changed = serial !== state.renderSerial;
-  state.renderSerial = serial;
-  if (changed) state.panelDirty = true;
-  if (changed) {
-    colorTex.image.data = eng.pixels(info.width, info.height);
-    colorTex.needsUpdate = true;
-    zsTex.image.data = eng.zscreen(info.height);
-    zsTex.needsUpdate = true;
+  const d = eng.takeDirty();
+  if (d[2] > d[0] && d[3] > d[1]) {
+    const x0 = Math.max(0, d[0]), y0 = Math.max(0, d[1]);
+    const x1 = Math.min(state.vsStride, d[2]), y1 = Math.min(info.height, d[3]);
+    if (x1 > x0 && y1 > y0) {
+      uploadPatch(colorTex, eng.pixels(info.width, info.height), state.vsStride, x0, y0, x1, y1, gl.RGBA, gl.UNSIGNED_BYTE);
+      uploadPatch(zsTex, eng.zscreen(info.height), state.zsStride, x0, y0, x1, y1, gl.RED_INTEGER, gl.UNSIGNED_SHORT);
+      if (x1 > PANEL.x) state.panelDirty = true;
+    }
   }
 
   const balls = eng.balls();
   const r = info.ballRadius;
   for (let i = 0; i < ballMeshes.length; i++) {
-    const b = balls[i], m = ballMeshes[i], s = shadowMeshes[i];
+    const b = i < balls.count ? balls[i] : null, m = ballMeshes[i], s = shadowMeshes[i];
     const vis = !!(b && b.visible);
     m.visible = s.visible = vis;
     if (!vis) continue;
@@ -844,13 +1018,15 @@ function loop(time) {
     updateHelpCard(dt);
     updateHands();
     state.panelTimer += dt;
-    if (state.panelDirty && state.panelTimer > 100) { state.panelTimer = 0; state.panelDirty = false; drawPanel(); }
+    // The flat-screen score panel is a 2D canvas; in VR the backglass shows it for free
+    if (!renderer.xr.isPresenting && state.panelDirty && state.panelTimer > 100) { state.panelTimer = 0; state.panelDirty = false; drawPanel(); }
   }
   if (!renderer.xr.isPresenting) updateFlatCamera(dt);
   renderer.render(scene, camera);
 }
 renderer.setAnimationLoop(loop);
 window.__scvr = state;
+state.debug = { THREE, gripByHand, updateGrab, sideInReach, rig, renderer };
 
 // ---------------------------------------------------------------- flat-screen view
 // The camera frames the whole table on any screen shape; drag and scroll adjust from there
@@ -949,6 +1125,8 @@ addEventListener('resize', () => {
 async function enterXR(mode) {
   const sessionInit = { optionalFeatures: ['local-floor', 'bounded-floor', 'hand-tracking'] };
   try {
+    // Performance mode trades a little sharpness for steadier frames on older headsets
+    renderer.xr.setFramebufferScaleFactor(localStorage.getItem('scvr-perf') === '1' ? 0.8 : 1);
     const session = await navigator.xr.requestSession(mode, sessionInit);
     state.audio.resume();
     const passthrough = mode === 'immersive-ar';
@@ -973,7 +1151,10 @@ async function enterXR(mode) {
     session.addEventListener('squeezestart', unlock);
     session.addEventListener('selectstart', (e) => handPinch(e, true));
     session.addEventListener('selectend', (e) => handPinch(e, false));
-    session.addEventListener('inputsourceschange', releaseAll);
+    session.addEventListener('inputsourceschange', () => {
+      releaseAll();
+      state.handsOnly = [...session.inputSources].some((s) => s.hand);
+    });
     state.needsRecenter = true;
     await renderer.xr.setSession(session);
   } catch (e) {
@@ -1057,6 +1238,8 @@ function updateStats() {
   $('last').textContent = last === null ? '\u2013' : Number(last).toLocaleString();
   $('stats').hidden = !state.running;
 }
+$('perf').checked = localStorage.getItem('scvr-perf') === '1';
+$('perf').addEventListener('change', (e) => localStorage.setItem('scvr-perf', e.target.checked ? '1' : '0'));
 const savedVolume = Number(localStorage.getItem('scvr-volume') ?? 80);
 $('volume').value = String(savedVolume);
 $('volume').addEventListener('input', (e) => {

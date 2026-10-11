@@ -144,11 +144,25 @@ export class PinballEngine {
     };
   }
 
+  // Reuses the same objects every call so the per-frame path makes no garbage
   balls() {
-    const f = new Float32Array(this.x.memory.buffer, this.x.scp_balls(), 64);
-    const out = [];
-    for (let i = 0; i < f[0]; i++) out.push({ x: f[1 + i * 4], y: f[2 + i * 4], z: f[3 + i * 4], visible: f[4 + i * 4] > 0 });
+    const buf = this.x.memory.buffer;
+    if (!this._ballView || this._ballView.buffer !== buf) this._ballView = new Float32Array(buf, this.x.scp_balls(), 64);
+    else this.x.scp_balls();
+    const f = this._ballView;
+    if (!this._balls) this._balls = Array.from({ length: 15 }, () => ({ x: 0, y: 0, z: 0, visible: false }));
+    const out = this._balls;
+    out.count = f[0];
+    for (let i = 0; i < f[0]; i++) { const b = out[i]; b.x = f[1 + i * 4]; b.y = f[2 + i * 4]; b.z = f[3 + i * 4]; b.visible = f[4 + i * 4] > 0; }
     return out;
+  }
+
+  // [x0, y0, x1, y1] of the area that changed since last asked (x1 <= x0 if nothing did)
+  takeDirty() {
+    const buf = this.x.memory.buffer;
+    const p = this.x.scp_take_dirty();
+    if (!this._dirtyView || this._dirtyView.buffer !== buf || this._dirtyPtr !== p) { this._dirtyView = new Int32Array(buf, p, 4); this._dirtyPtr = p; }
+    return this._dirtyView;
   }
 
   // BGRA pixels of the composed table (same layout the 2D game shows)

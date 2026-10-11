@@ -1,4 +1,5 @@
 #include "pch.h"
+void scp_mark_dirty(const void* target, int x, int y, int w, int h);
 #include "gdrv.h"
 
 #include "GroupData.h"
@@ -136,6 +137,7 @@ int gdrv::display_palette(ColorRgba* plt)
 
 void gdrv::fill_bitmap(gdrv_bitmap8* bmp, int width, int height, int xOff, int yOff, uint8_t fillChar)
 {
+	scp_mark_dirty(bmp, xOff, yOff, width, height);
 	auto color = current_palette[fillChar];
 	auto bmpPtr = &bmp->BmpBufPtr1[bmp->Width * yOff + xOff];
 	for (; height > 0; --height)
@@ -149,6 +151,7 @@ void gdrv::fill_bitmap(gdrv_bitmap8* bmp, int width, int height, int xOff, int y
 void gdrv::copy_bitmap(gdrv_bitmap8* dstBmp, int width, int height, int xOff, int yOff, gdrv_bitmap8* srcBmp,
                        int srcXOff, int srcYOff)
 {
+	scp_mark_dirty(dstBmp, xOff, yOff, width, height);
 	auto srcPtr = &srcBmp->BmpBufPtr1[srcBmp->Stride * srcYOff + srcXOff];
 	auto dstPtr = &dstBmp->BmpBufPtr1[dstBmp->Stride * yOff + xOff];
 
@@ -163,6 +166,7 @@ void gdrv::copy_bitmap(gdrv_bitmap8* dstBmp, int width, int height, int xOff, in
 void gdrv::copy_bitmap_w_transparency(gdrv_bitmap8* dstBmp, int width, int height, int xOff, int yOff,
                                       gdrv_bitmap8* srcBmp, int srcXOff, int srcYOff)
 {
+	scp_mark_dirty(dstBmp, xOff, yOff, width, height);
 	auto srcPtr = &srcBmp->BmpBufPtr1[srcBmp->Stride * srcYOff + srcXOff];
 	auto dstPtr = &dstBmp->BmpBufPtr1[dstBmp->Stride * yOff + xOff];
 
