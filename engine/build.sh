@@ -21,5 +21,5 @@ clang++ --target=wasm32-wasip1 --sysroot=$SYSROOT -O2 -nodefaultlibs \
   $OBJS -lc++ -lc++abi -lc $RT -lwasi-emulated-signal \
   -Wl,--no-entry -Wl,--export=malloc -Wl,--export=free -Wl,--export=_initialize \
   -Wl,--allow-undefined-file=shim/imports.txt -Wl,-z,stack-size=1048576 -Wl,--initial-memory=67108864 -Wl,--max-memory=268435456 -Wl,--growable-table \
-  -mexec-model=reactor -o ../web/engine.wasm
-ls -la ../web/engine.wasm
+  -mexec-model=reactor -o ../engine.wasm
+ls -la ../engine.wasm
