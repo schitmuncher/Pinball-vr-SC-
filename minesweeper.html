@@ -1,0 +1,110 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Minesweeper VR</title>
+<link rel="icon" href="data:,">
+<meta name="description" content="Classic mine-clearing puzzle as a WebXR game for Meta Quest, phones and computers.">
+<style>
+  :root {
+    --bg: #07060f; --panel: rgba(16, 13, 36, 0.92); --line: #3d3680; --ink: #ecebff;
+    --muted: #a6a3d6; --accent: #8d86ff; --hot: #ff4d7d;
+  }
+  * { box-sizing: border-box; }
+  html, body { margin: 0; height: 100%; background: var(--bg); color: var(--ink); font: 16px/1.45 system-ui, -apple-system, Segoe UI, Roboto, sans-serif; overflow: hidden; }
+  #stage { position: fixed; inset: 0; }
+  #stage canvas { display: block; touch-action: none; }
+  #stage, #flat-ui { -webkit-user-select: none; user-select: none; -webkit-touch-callout: none; -webkit-tap-highlight-color: transparent; }
+  .card {
+    position: fixed; left: 50%; top: 50%; transform: translate(-50%, -50%);
+    width: min(520px, calc(100vw - 32px)); max-height: calc(100vh - 32px); overflow: auto;
+    background: var(--panel); border: 1px solid var(--line); border-radius: 18px;
+    padding: 26px 26px 22px; backdrop-filter: blur(8px); box-shadow: 0 30px 80px rgba(0,0,0,0.6);
+  }
+  .card::before { content: ""; position: absolute; inset: 0 0 auto 0; height: 3px; border-radius: 18px 18px 0 0; background: linear-gradient(90deg, #9a7bff, #37e0ff); }
+  h1 { margin: 0 0 4px; font-size: 30px; line-height: 1.1; }
+  h1 span { background: linear-gradient(90deg, #a99bff, #46dcff); -webkit-background-clip: text; background-clip: text; color: transparent; }
+  .sub { color: var(--muted); margin: 0 0 16px; }
+  .note { color: var(--muted); font-size: 14px; }
+  .btns { display: flex; flex-wrap: wrap; gap: 10px; margin: 12px 0 4px; }
+  button { appearance: none; border: 1px solid var(--line); background: #1d1940; color: var(--ink); padding: 12px 18px; border-radius: 12px; font: inherit; font-weight: 600; cursor: pointer; }
+  button.primary { background: var(--accent); border-color: var(--accent); color: #0b0820; }
+  button.big { font-size: 18px; padding: 14px 24px; }
+  button:hover { filter: brightness(1.12); }
+  .seg { display: flex; gap: 6px; margin: 14px 0 6px; }
+  .seg button { flex: 1; padding: 10px 8px; font-size: 14px; }
+  .seg button.on { background: #2c2670; border-color: var(--accent); }
+  .stats { display: flex; gap: 10px; margin: 10px 0 2px; }
+  .stat { flex: 1; background: rgba(29,25,64,0.7); border: 1px solid var(--line); border-radius: 12px; padding: 8px 12px; }
+  .stat b { display: block; font-size: 18px; font-variant-numeric: tabular-nums; }
+  .stat span { color: var(--muted); font-size: 12px; text-transform: uppercase; letter-spacing: 0.08em; }
+  a { color: var(--accent); }
+  details { margin-top: 14px; border-top: 1px solid var(--line); padding-top: 10px; }
+  summary { cursor: pointer; color: var(--muted); font-weight: 600; }
+  table.ctl { width: 100%; border-collapse: collapse; font-size: 14px; margin-top: 8px; }
+  table.ctl th { text-align: left; color: var(--accent); font-weight: 600; padding: 10px 0 4px; font-size: 12px; text-transform: uppercase; letter-spacing: 0.08em; }
+  table.ctl td { padding: 3px 0; vertical-align: top; }
+  table.ctl td:first-child { color: var(--muted); width: 44%; padding-right: 10px; }
+  #flat-ui { display: none; }
+  body.flat-play .card { display: none; }
+  body.flat-play #flat-ui { display: block; }
+  body.in-xr .card { display: none; }
+  #menu-btn { position: fixed; left: 12px; top: 12px; padding: 8px 14px; }
+  .keys { position: fixed; left: 12px; bottom: 12px; color: var(--muted); font-size: 13px; background: var(--panel); padding: 8px 12px; border-radius: 10px; border: 1px solid var(--line); }
+  #flag-mode { display: none; position: fixed; right: 12px; bottom: 16px; padding: 14px 18px; font-size: 16px; }
+  #flag-mode.on { background: var(--hot); border-color: var(--hot); color: #fff; }
+  @media (pointer: coarse) { .keys { display: none; } #flag-mode { display: block; } }
+</style>
+</head>
+<body>
+<div id="stage"></div>
+
+<div class="card" id="card">
+  <h1>Mine<span>sweeper VR</span></h1>
+  <p class="sub">Clear the field without setting off a mine. Numbers tell you how many mines touch that square.</p>
+  <div class="seg" id="levels">
+    <button data-level="beginner">Beginner<br><span class="note">9 × 9 · 10</span></button>
+    <button data-level="intermediate">Intermediate<br><span class="note">16 × 16 · 40</span></button>
+    <button data-level="expert">Expert<br><span class="note">30 × 16 · 99</span></button>
+  </div>
+  <div class="stats">
+    <div class="stat"><span>Best beginner</span><b id="best-beginner">–</b></div>
+    <div class="stat"><span>Intermediate</span><b id="best-intermediate">–</b></div>
+    <div class="stat"><span>Expert</span><b id="best-expert">–</b></div>
+  </div>
+  <div class="btns">
+    <button class="primary big" id="enter-vr" hidden>Play in VR</button>
+    <button class="big" id="enter-ar" hidden>Play in your room</button>
+    <button id="play-flat">Play on this screen</button>
+  </div>
+  <p class="note" id="no-xr" hidden>No VR headset found here. Open this page in the Meta Quest browser to play in VR.</p>
+  <details>
+    <summary>Controls</summary>
+    <table class="ctl">
+      <tr><th colspan="2">Quest controllers</th></tr>
+      <tr><td>Point + trigger</td><td>Dig a square (on a number: clear around it)</td></tr>
+      <tr><td>Point + grip, A or X</td><td>Flag / unflag</td></tr>
+      <tr><td>B or Y</td><td>New game</td></tr>
+      <tr><td>Left stick</td><td>Up/down: board height · click: bring board to you</td></tr>
+      <tr><th colspan="2">Mouse</th></tr>
+      <tr><td>Left click</td><td>Dig (on a number: clear around it)</td></tr>
+      <tr><td>Right click</td><td>Flag</td></tr>
+      <tr><th colspan="2">Touch</th></tr>
+      <tr><td>Tap</td><td>Dig</td></tr>
+      <tr><td>Long press, or Flag mode</td><td>Flag</td></tr>
+    </table>
+    <p class="note">Your first dig is always safe.</p>
+  </details>
+  <p class="note" style="margin-top:14px"><a href="./">← Space Cadet Pinball VR</a></p>
+</div>
+
+<div id="flat-ui">
+  <button id="menu-btn">Menu</button>
+  <div class="keys">Left click: dig · Right click: flag · Click a number to clear around it · N: new game</div>
+  <button id="flag-mode">🚩 Flag mode</button>
+</div>
+
+<script type="module" src="minesweeper.js"></script>
+</body>
+</html>

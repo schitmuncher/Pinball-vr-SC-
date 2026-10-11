@@ -30,6 +30,13 @@ If VR stutters when you turn your head, tick **VR performance mode** on the star
 On a computer: Z and / flip, Space is the plunger, X . and ↑ nudge, F2 new game, P pause.
 On a phone: tap the left or right side to flip, hold the middle to launch, swipe left, right or up to nudge.
 
+## More games
+
+**Minesweeper VR** (`minesweeper.html`): the classic mine-clearing puzzle as a 3D board you point at.
+It needs no game files; the graphics and sounds are original. Point and pull the trigger to dig
+(on a number it clears around it), grip or A/X to flag, B/Y for a new game. Beginner, Intermediate
+and Expert boards, best times saved. Works on flat screens and phones too.
+
 ## Hosting on GitHub Pages
 
 The game is the static files at the root of this repo. In Settings, Pages, set the source to the
