@@ -363,3 +363,6 @@ extern "C" EXPORT(scp_debug) float* scp_debug()
 	d[5] = pb::MainTable ? pb::MainTable->BallList[0]->ActiveFlag : -1;
 	return d;
 }
+
+extern int g_renderSerial;
+extern "C" EXPORT(scp_render_serial) int scp_render_serial() { return g_renderSerial; }

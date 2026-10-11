@@ -28,7 +28,8 @@ renderer.setPixelRatio(Math.min(devicePixelRatio, 2));
 renderer.setSize(innerWidth, innerHeight);
 renderer.xr.enabled = true;
 renderer.xr.setReferenceSpaceType('local-floor');
-renderer.xr.setFoveation(0.4);
+renderer.xr.setFoveation(0.7);
+const IS_QUEST = /OculusBrowser|Quest|Pacific/i.test(navigator.userAgent);
 renderer.outputColorSpace = THREE.SRGBColorSpace;
 $('stage').appendChild(renderer.domElement);
 
@@ -145,10 +146,15 @@ function buildMachine(info, eng) {
   const tableW = Math.min(bgz ? info.bgzWidth + info.bgzOffsetX : PANEL.x - 10, PANEL.x - 4);
   const tableH = Math.min(H, bgz ? info.bgzHeight + info.bgzOffsetY : H);
 
-  // One vertex per pixel: depth comes from the original per-pixel depth maps
-  const cols = tableW, rows = tableH;
+  // A grid of vertices over the table; depth comes from the original per-pixel depth maps.
+  // On Quest use every other pixel (a quarter of the vertices) to keep the frame rate up;
+  // the art is still sampled per pixel so it stays just as sharp.
+  const STEP = IS_QUEST ? 2 : 1;
+  const cols = Math.ceil(tableW / STEP), rows = Math.ceil(tableH / STEP);
   const pix = new Float32Array(cols * rows * 2);
-  for (let y = 0, i = 0; y < rows; y++) for (let x = 0; x < cols; x++, i += 2) { pix[i] = x; pix[i + 1] = y; }
+  for (let y = 0, i = 0; y < rows; y++) for (let x = 0; x < cols; x++, i += 2) {
+    pix[i] = Math.min(x * STEP, tableW - 1); pix[i + 1] = Math.min(y * STEP, tableH - 1);
+  }
   const idx = new Uint32Array((cols - 1) * (rows - 1) * 6);
   for (let y = 0, k = 0; y < rows - 1; y++) for (let x = 0; x < cols - 1; x++) {
     const a = y * cols + x, b = a + 1, c = a + cols, d = c + 1;
@@ -156,7 +162,7 @@ function buildMachine(info, eng) {
   }
   const geo = new THREE.BufferGeometry();
   geo.setAttribute('pix', new THREE.BufferAttribute(pix, 2));
-  geo.setAttribute('position', new THREE.BufferAttribute(new Float32Array(cols * rows * 3), 3));
+  geo.setAttribute('position', new THREE.BufferAttribute(new Float32Array(cols * rows * 3), 3)); // placeholder, computed in the shader
   geo.setIndex(new THREE.BufferAttribute(idx, 1));
   geo.boundingSphere = new THREE.Sphere(new THREE.Vector3(), 2);
 
@@ -610,10 +616,17 @@ function pulse(src, strength, ms) {
 const tmpV = new THREE.Vector3();
 function updateTable() {
   const eng = state.engine, info = state.info;
-  colorTex.image.data = eng.pixels(info.width, info.height);
-  colorTex.needsUpdate = true;
-  zsTex.image.data = eng.zscreen(info.height);
-  zsTex.needsUpdate = true;
+  // Only send the table picture to the GPU when the game actually changed it
+  const serial = eng.x.scp_render_serial();
+  const changed = serial !== state.renderSerial;
+  state.renderSerial = serial;
+  if (changed) state.panelDirty = true;
+  if (changed) {
+    colorTex.image.data = eng.pixels(info.width, info.height);
+    colorTex.needsUpdate = true;
+    zsTex.image.data = eng.zscreen(info.height);
+    zsTex.needsUpdate = true;
+  }
 
   const balls = eng.balls();
   const r = info.ballRadius;
@@ -651,7 +664,7 @@ function loop(time) {
     updateTable();
     updateSign();
     state.panelTimer += dt;
-    if (state.panelDirty || state.panelTimer > 100) { state.panelTimer = 0; state.panelDirty = false; drawPanel(); }
+    if (state.panelDirty && state.panelTimer > 100) { state.panelTimer = 0; state.panelDirty = false; drawPanel(); }
   }
   if (!renderer.xr.isPresenting) updateFlatCamera(dt);
   renderer.render(scene, camera);
@@ -746,10 +759,6 @@ async function enterXR(mode) {
     session.addEventListener('selectstart', (e) => handPinch(e, true));
     session.addEventListener('selectend', (e) => handPinch(e, false));
     session.addEventListener('inputsourceschange', releaseAll);
-    if (session.updateTargetFrameRate && session.supportedFrameRates) {
-      const best = Math.max(...[...session.supportedFrameRates].filter((r) => r <= 90));
-      if (isFinite(best)) session.updateTargetFrameRate(best).catch(() => {});
-    }
     state.needsRecenter = true;
     await renderer.xr.setSession(session);
   } catch (e) {

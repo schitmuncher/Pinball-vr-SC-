@@ -9,7 +9,7 @@ chrome sphere.
 ## Playing
 
 1. Open the page in the Meta Quest browser.
-2. Choose your game files once (music is off by default; tick Music to turn it on): the Pinball-on-Android APK, a zip of your Windows Pinball folder,
+2. Choose your game files once (get the APK from https://github.com/fexed/Pinball-on-Android/releases/tag/2.5 if you don't have it) (music is off by default; tick Music to turn it on): the Pinball-on-Android APK, a zip of your Windows Pinball folder,
    or the files themselves (PINBALL.DAT plus the .WAV and .MID files). They stay in the browser.
 3. Press **Play in VR**, or **Play in your room** for passthrough.
 

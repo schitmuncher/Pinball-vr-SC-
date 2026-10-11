@@ -10,6 +10,7 @@
 #include "winmain.h"
 
 extern bool g_hide2dBalls;
+int g_renderSerial = 0; // bumped whenever the table picture changes
 
 std::vector<render_sprite_type_struct*> render::dirty_list, render::sprite_list, render::ball_list;
 zmap_header_type* render::background_zmap;
@@ -84,6 +85,8 @@ void render::recreate_screen_texture()
 
 void render::update()
 {
+	if (!dirty_list.empty())
+		g_renderSerial++;
 	unpaint_balls();
 
 	// Clip dirty sprites with vScreen, clear clipping (dirty) rectangles 
