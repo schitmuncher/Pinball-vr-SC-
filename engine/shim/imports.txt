@@ -1,0 +1,14 @@
+now_ms
+log
+load_sound
+play_sound
+stop_sounds
+sound_volume
+load_music
+load_music_mem
+play_music
+stop_music
+music_volume
+event
+text
+get_high_score

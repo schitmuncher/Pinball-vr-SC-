@@ -1,0 +1,120 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Space Cadet Pinball VR</title>
+<link rel="icon" href="data:,">
+<meta name="description" content="3D Pinball Space Cadet as a WebXR table for Meta Quest, using your own copy of the game files.">
+<style>
+  :root {
+    --bg: #07060f;
+    --panel: rgba(16, 13, 36, 0.9);
+    --line: #3d3680;
+    --ink: #ecebff;
+    --muted: #a6a3d6;
+    --accent: #8d86ff;
+    --hot: #ff4d7d;
+  }
+  * { box-sizing: border-box; }
+  html, body { margin: 0; height: 100%; background: var(--bg); color: var(--ink); font: 16px/1.45 system-ui, -apple-system, Segoe UI, Roboto, sans-serif; overflow: hidden; }
+  #stage { position: fixed; inset: 0; }
+  #stage canvas { display: block; touch-action: none; }
+
+  .card {
+    position: fixed; left: 50%; top: 50%; transform: translate(-50%, -50%);
+    width: min(560px, calc(100vw - 32px)); max-height: calc(100vh - 32px); overflow: auto;
+    background: var(--panel); border: 1px solid var(--line); border-radius: 18px;
+    padding: 26px 26px 22px; backdrop-filter: blur(8px);
+    box-shadow: 0 30px 80px rgba(0,0,0,0.6);
+  }
+  h1 { margin: 0 0 4px; font-size: 28px; letter-spacing: 0.01em; }
+  h1 span { color: var(--accent); }
+  .sub { color: var(--muted); margin: 0 0 18px; }
+  h2 { font-size: 15px; text-transform: uppercase; letter-spacing: 0.08em; color: var(--muted); margin: 20px 0 8px; }
+  p { margin: 8px 0; }
+  .note { color: var(--muted); font-size: 14px; }
+  .btns { display: flex; flex-wrap: wrap; gap: 10px; margin: 12px 0 4px; }
+  button, .pick {
+    appearance: none; border: 1px solid var(--line); background: #1d1940; color: var(--ink);
+    padding: 12px 18px; border-radius: 12px; font: inherit; font-weight: 600; cursor: pointer;
+  }
+  button.primary, .pick.primary { background: var(--accent); border-color: var(--accent); color: #0b0820; }
+  button:hover, .pick:hover { filter: brightness(1.12); }
+  .pick input { display: none; }
+  .row { display: flex; align-items: center; gap: 14px; flex-wrap: wrap; margin-top: 10px; color: var(--muted); }
+  select { background: #1d1940; color: var(--ink); border: 1px solid var(--line); border-radius: 8px; padding: 6px 8px; font: inherit; }
+  #error { background: #3a1023; border: 1px solid var(--hot); color: #ffd4e0; padding: 10px 12px; border-radius: 10px; margin-top: 12px; }
+  .spinner { width: 28px; height: 28px; border: 3px solid var(--line); border-top-color: var(--accent); border-radius: 50%; animation: spin 0.8s linear infinite; display: inline-block; vertical-align: middle; margin-right: 10px; }
+  @keyframes spin { to { transform: rotate(360deg); } }
+  a { color: var(--accent); }
+  .linkish { background: none; border: none; color: var(--muted); padding: 0; text-decoration: underline; font-weight: 400; font-size: 14px; }
+
+  /* Flat-screen play */
+  #flat-ui { display: none; }
+  body.flat-play .card { display: none; }
+  body.flat-play #flat-ui { display: block; }
+  body.in-xr .card { display: none; }
+  #hud-panel { position: fixed; right: 12px; top: 12px; width: 150px; border: 1px solid var(--line); border-radius: 8px; overflow: hidden; }
+  #hud-panel canvas { width: 100%; display: block; }
+  #menu-btn { position: fixed; left: 12px; top: 12px; padding: 8px 14px; }
+  .keys { position: fixed; left: 12px; bottom: 12px; color: var(--muted); font-size: 13px; background: var(--panel); padding: 8px 12px; border-radius: 10px; border: 1px solid var(--line); }
+  .touch { display: none; position: fixed; bottom: 0; left: 0; right: 0; height: 38vh; }
+  .touch div { position: absolute; bottom: 0; top: 0; }
+  #t-left { left: 0; width: 40%; }
+  #t-right { right: 0; width: 40%; }
+  #t-plunge { left: 40%; width: 20%; display: flex; align-items: flex-end; justify-content: center; padding-bottom: 20px; color: var(--muted); font-size: 13px; }
+  @media (pointer: coarse) { .touch { display: block; } .keys { display: none; } #hud-panel { width: 110px; } }
+</style>
+</head>
+<body>
+<div id="stage"></div>
+
+<div class="card" id="card">
+  <h1>Space Cadet <span>Pinball VR</span></h1>
+  <p class="sub">The original table, physics and sounds, rebuilt as a real 3D machine you stand at on Meta Quest.</p>
+
+  <section id="load-step">
+    <h2>1 · Load your game files</h2>
+    <p>Pick the <b>Pinball-on-Android APK</b> you downloaded, a zip of your Windows <b>Pinball</b> folder, or the files themselves (<code>PINBALL.DAT</code> plus the <code>.WAV</code> and <code>.MID</code> files).</p>
+    <div class="btns">
+      <label class="pick primary">Choose files<input id="file-input" type="file" multiple accept=".apk,.zip,.dat,.DAT,.wav,.WAV,.mid,.MID,.mp3,.ogg,application/vnd.android.package-archive,application/zip"></label>
+      <label class="pick">Choose a folder<input id="folder-input" type="file" webkitdirectory></label>
+    </div>
+    <p class="note">The files stay on this device. They're saved in the browser so you only do this once.</p>
+  </section>
+
+  <section id="loading" hidden>
+    <p><span class="spinner"></span>Building the table…</p>
+  </section>
+
+  <section id="play-step" hidden>
+    <h2>2 · Play</h2>
+    <div class="btns">
+      <button class="primary" id="enter-vr" hidden>Play in VR</button>
+      <button id="enter-ar" hidden>Play in your room</button>
+      <button id="play-flat">Play on this screen</button>
+    </div>
+    <p class="note" id="no-xr" hidden>No VR headset found here. Open this page in the Meta Quest browser to play in VR.</p>
+    <div class="row">
+      <label>Players <select id="players"><option>1</option><option>2</option><option>3</option><option>4</option></select></label>
+      <label><input type="checkbox" id="music"> Music</label>
+      <button class="linkish" id="new-game">New game</button>
+      <button class="linkish" id="forget">Use different files</button>
+    </div>
+    <p class="note">In VR: triggers or grips flip, hold A or X to pull the plunger and let go to launch, flick the right stick to nudge. B pauses, Y starts a new game. Click the left stick to move the table in front of you, push it up or down to change the height.</p>
+  </section>
+
+  <div id="error" hidden></div>
+</div>
+
+<div id="flat-ui">
+  <button id="menu-btn">Menu</button>
+  <div id="hud-panel"></div>
+  <div class="keys">Z / slash: flippers · Space: plunger · X . ↑: nudge · F2: new game · P: pause · drag to look around</div>
+  <div class="touch"><div id="t-left"></div><div id="t-plunge">hold to launch</div><div id="t-right"></div></div>
+</div>
+
+<script type="module" src="app.js"></script>
+</body>
+</html>
