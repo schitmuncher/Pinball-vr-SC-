@@ -66,6 +66,25 @@ for (let i = 0; i < 2; i++) {
   scene.add(grip);
 }
 
+// Hand tracking: draw each tracked joint as a small glowing bead so you can see your hands
+const hands = [0, 1].map((i) => { const h = renderer.xr.getHand(i); scene.add(h); return h; });
+const jointGeo = new THREE.SphereGeometry(1, 10, 8);
+const jointMat = new THREE.MeshStandardMaterial({ color: 0xc9c4ff, emissive: 0x3a2f99, roughness: 0.4 });
+function updateHands() {
+  for (const h of hands) {
+    if (!h.joints) continue;
+    for (const name in h.joints) {
+      const j = h.joints[name];
+      if (j.userData.bead) continue;
+      const bead = new THREE.Mesh(jointGeo, jointMat);
+      const r = name.includes('tip') ? 0.0065 : 0.0075;
+      bead.scale.setScalar(name === 'wrist' ? 0.012 : r);
+      j.add(bead);
+      j.userData.bead = bead;
+    }
+  }
+}
+
 // ---------------------------------------------------------------- the room
 function buildRoom() {
   const floor = new THREE.Mesh(
@@ -198,6 +217,8 @@ function buildMachine(info, eng) {
         vec3 v = vec3((pix.x - uProj.y) / uProj.x, (pix.y - uProj.z) / uProj.x, 1.0);
         vec3 cam = v * (dist / length(v));
         vec3 w = uRT * (cam - uT);
+        // A few stray depth values in the original data would make spikes; nothing on the table is that tall
+        if (w.z > 3.0 || w.z < -2.5) vValid = 0.0;
         vec3 p = vec3(-w.x, w.z, w.y) * uUnit;
         vPos = p;
         vUv = (pix + 0.5) / uSize;
@@ -286,6 +307,45 @@ function measureTable(info, bgz, w, h) {
   return { minX: minX * UNIT, maxX: maxX * UNIT, minZ: minZ * UNIT, maxZ: maxZ * UNIT, maxY: maxY * UNIT };
 }
 
+function glowTexture() {
+  const c = document.createElement('canvas');
+  c.width = c.height = 128;
+  const x = c.getContext('2d');
+  const g = x.createRadialGradient(64, 64, 4, 64, 64, 64);
+  g.addColorStop(0, 'rgba(120,90,255,0.55)'); g.addColorStop(0.5, 'rgba(60,140,255,0.18)'); g.addColorStop(1, 'rgba(0,0,0,0)');
+  x.fillStyle = g; x.fillRect(0, 0, 128, 128);
+  const t = new THREE.CanvasTexture(c);
+  t.colorSpace = THREE.SRGBColorSpace;
+  return t;
+}
+
+// Original abstract side art: deep-space gradient, stars and a swoosh
+function makeSideArt() {
+  const c = document.createElement('canvas');
+  c.width = 1024; c.height = 160;
+  const x = c.getContext('2d');
+  const g = x.createLinearGradient(0, 0, 1024, 0);
+  g.addColorStop(0, '#120c2e'); g.addColorStop(0.5, '#24135a'); g.addColorStop(1, '#0c1838');
+  x.fillStyle = g; x.fillRect(0, 0, 1024, 160);
+  let seed = 7;
+  const rnd = () => ((seed = (seed * 16807) % 2147483647) / 2147483647);
+  for (let i = 0; i < 260; i++) {
+    const r = rnd() * 1.6 + 0.3;
+    x.fillStyle = `rgba(255,255,255,${0.3 + rnd() * 0.7})`;
+    x.beginPath(); x.arc(rnd() * 1024, rnd() * 160, r, 0, Math.PI * 2); x.fill();
+  }
+  for (const [col, off, wdt] of [['rgba(154,123,255,0.85)', 0, 10], ['rgba(55,224,255,0.75)', 18, 5]]) {
+    x.strokeStyle = col; x.lineWidth = wdt; x.lineCap = 'round';
+    x.beginPath(); x.moveTo(30, 130 - off);
+    x.bezierCurveTo(300, 150 - off, 520, 20 - off, 1000, 40 - off);
+    x.stroke();
+  }
+  const t = new THREE.CanvasTexture(c);
+  t.colorSpace = THREE.SRGBColorSpace;
+  t.anisotropy = 4;
+  return t;
+}
+
 function radialTexture() {
   const c = document.createElement('canvas');
   c.width = c.height = 64;
@@ -299,7 +359,7 @@ function radialTexture() {
 function buildCabinet(machine, b, cx, cz) {
   const w = b.maxX - b.minX, len = b.maxZ - b.minZ;
   const body = new THREE.MeshStandardMaterial({ color: 0x15132e, roughness: 0.5, metalness: 0.3 });
-  const trim = new THREE.MeshStandardMaterial({ color: 0x8d92a6, roughness: 0.3, metalness: 0.85, envMap });
+  const trim = new THREE.MeshStandardMaterial({ color: 0x6f7488, roughness: 0.32, metalness: 0.9, envMap, envMapIntensity: 0.8 });
   const dark = new THREE.MeshStandardMaterial({ color: 0x08080c, roughness: 0.8 });
 
   // Everything that follows the playfield tilt
@@ -316,6 +376,38 @@ function buildCabinet(machine, b, cx, cz) {
   box(wall * 1.3, 0.012, len + wall * 2.4, trim, -w / 2 - wall / 2, sideH - depthBelow + 0.006, 0); // rails
   box(wall * 1.3, 0.012, len + wall * 2.4, trim, w / 2 + wall / 2, sideH - depthBelow + 0.006, 0);
   box(w + wall * 3, 0.03, 0.06, trim, 0, sideH - depthBelow - 0.01, len / 2 + wall + 0.03); // lockdown bar
+
+  // Side art and neon trim
+  const sideArt = makeSideArt();
+  for (const sx of [-1, 1]) {
+    const art = new THREE.Mesh(new THREE.PlaneGeometry(len + wall * 2, sideH * 0.92),
+      new THREE.MeshStandardMaterial({ map: sideArt, roughness: 0.45, metalness: 0.2, emissive: 0xffffff, emissiveMap: sideArt, emissiveIntensity: 0.35 }));
+    art.position.set(sx * (w / 2 + wall + 0.0008), sideH / 2 - depthBelow, 0);
+    art.rotation.y = sx * Math.PI / 2;
+    tub.add(art);
+  }
+  const neon = (color) => new THREE.MeshBasicMaterial({ color, toneMapped: false });
+  const neonA = neon(0x9a7bff), neonB = neon(0x37e0ff);
+  box(0.006, 0.006, len + wall * 2, neonA, -w / 2 - wall - 0.003, -depthBelow + 0.004, 0);
+  box(0.006, 0.006, len + wall * 2, neonA, w / 2 + wall + 0.003, -depthBelow + 0.004, 0);
+  box(w + wall * 2, 0.006, 0.006, neonB, 0, -depthBelow + 0.004, len / 2 + wall + 0.003);
+
+  // Front panel: a lit coin door
+  const door = new THREE.Group();
+  const doorPlate = new THREE.Mesh(new THREE.BoxGeometry(0.2, 0.12, 0.006), trim);
+  door.add(doorPlate);
+  for (const dx of [-0.05, 0.05]) {
+    const bezel = new THREE.Mesh(new THREE.BoxGeometry(0.03, 0.05, 0.006), body);
+    bezel.position.set(dx, 0.01, 0.004);
+    const slot = new THREE.Mesh(new THREE.BoxGeometry(0.004, 0.026, 0.004), neon(0xff3355));
+    slot.position.set(dx, 0.012, 0.008);
+    door.add(bezel, slot);
+  }
+  const ret = new THREE.Mesh(new THREE.BoxGeometry(0.05, 0.016, 0.006), dark);
+  ret.position.set(0, -0.034, 0.004);
+  door.add(ret);
+  door.position.set(0, sideH / 2 - depthBelow - 0.005, len / 2 + wall + 0.004);
+  tub.add(door);
 
   // Flipper buttons on the cabinet sides (they light while pressed)
   const btnGeo = new THREE.CylinderGeometry(0.014, 0.014, 0.012, 20);
@@ -354,6 +446,18 @@ function buildCabinet(machine, b, cx, cz) {
   const glass = new THREE.Mesh(new THREE.PlaneGeometry(glassW, glassH), new THREE.MeshBasicMaterial({ map: panelTex, toneMapped: false }));
   glass.position.z = 0.081;
   backbox.add(glass);
+  // Glowing frame around the backglass
+  const frameMat = neon(0x9a7bff);
+  for (const [fw, fh, fx, fy] of [[glassW + 0.02, 0.008, 0, glassH / 2 + 0.008], [glassW + 0.02, 0.008, 0, -glassH / 2 - 0.008],
+    [0.008, glassH + 0.024, glassW / 2 + 0.008, 0], [0.008, glassH + 0.024, -glassW / 2 - 0.008, 0]]) {
+    const f = new THREE.Mesh(new THREE.BoxGeometry(fw, fh, 0.006), frameMat);
+    f.position.set(fx, fy, 0.082);
+    backbox.add(f);
+  }
+  // Light from the backbox washing over the cabinet
+  const bbLight = new THREE.PointLight(0x9a8cff, 0.6, 1.6, 2);
+  bbLight.position.set(0, -bbH / 2, 0.25);
+  backbox.add(bbLight);
   const trimTop = new THREE.Mesh(new THREE.BoxGeometry(bbW + 0.01, 0.02, 0.17), trim);
   trimTop.position.y = bbH / 2;
   backbox.add(trimTop);
@@ -362,6 +466,13 @@ function buildCabinet(machine, b, cx, cz) {
   backbox.add(neck);
   backbox.position.set(0, backY - depthBelow + sideH + 0.06 + bbH / 2, -len / 2 * Math.cos(TILT) - 0.09);
   machine.add(backbox);
+
+  // Soft glow on the floor under the machine (its height is set in placeMachineDefault)
+  const glow = new THREE.Mesh(new THREE.PlaneGeometry(w + 0.9, len + 0.9),
+    new THREE.MeshBasicMaterial({ map: glowTexture(), transparent: true, depthWrite: false, blending: THREE.AdditiveBlending, toneMapped: false }));
+  glow.rotation.x = -Math.PI / 2;
+  machine.add(glow);
+  state.floorGlow = glow;
 
   // Status sign floating just past the lockdown bar: launch hint, pause, game over
   const signCanvas = document.createElement('canvas');
@@ -387,37 +498,40 @@ function buildCabinet(machine, b, cx, cz) {
 
 function makeHelpCard() {
   const c = document.createElement('canvas');
-  c.width = 512; c.height = 440;
+  c.width = 512; c.height = 450;
   const x = c.getContext('2d');
   x.fillStyle = 'rgba(12,10,30,0.86)';
-  x.fillRect(0, 0, 512, 440);
-  x.strokeStyle = '#7f7cff'; x.lineWidth = 4; x.strokeRect(2, 2, 508, 436);
+  x.fillRect(0, 0, 512, 450);
+  x.strokeStyle = '#7f7cff'; x.lineWidth = 4; x.strokeRect(2, 2, 508, 446);
   x.fillStyle = '#fff'; x.font = 'bold 34px system-ui, sans-serif';
   x.fillText('Controls', 24, 50);
   x.font = '25px system-ui, sans-serif';
   const lines = [
-    ['Triggers / grips', 'Flippers'],
+    ['Triggers', 'Flippers'],
     ['A or X (hold)', 'Pull plunger, let go to launch'],
-    ['Right stick', 'Nudge left / right / up'],
+    ['Grips', 'Nudge (both grips: nudge up)'],
     ['B', 'Pause'],
     ['Y', 'New game'],
     ['Left stick ↑↓', 'Table height'],
     ['Left stick click', 'Move table in front of you'],
     ['Hands only', 'Pinch to flip, both to launch'],
   ];
+  x.fillStyle = '#8f8cc0'; x.font = '21px system-ui, sans-serif';
+  x.fillText('Shows while paused. Too many nudges will tilt!', 24, 425);
   lines.forEach(([a, b], i) => {
     x.fillStyle = '#b9b6ff'; x.fillText(a, 24, 100 + i * 42);
     x.fillStyle = '#e8e8f0'; x.fillText(b, 230, 100 + i * 42);
   });
   const t = new THREE.CanvasTexture(c);
   t.colorSpace = THREE.SRGBColorSpace;
-  return new THREE.Mesh(new THREE.PlaneGeometry(0.4, 0.344), new THREE.MeshBasicMaterial({ map: t, transparent: true, toneMapped: false }));
+  return new THREE.Mesh(new THREE.PlaneGeometry(0.4, 0.352), new THREE.MeshBasicMaterial({ map: t, transparent: true, toneMapped: false }));
 }
 
 function placeMachineDefault() {
   const b = state.tableBounds;
   const len = b.maxZ - b.minZ;
   state.machine.position.set(0, 0.9 + Math.sin(TILT) * len / 2 + state.heightOffset, -len / 2 - 0.22);
+  if (state.floorGlow) state.floorGlow.position.y = -state.machine.position.y + 0.004;
 }
 
 // Recenter: put the machine in front of wherever the player is now standing and facing
@@ -483,8 +597,17 @@ async function startEngine(files) {
       if (kind === 4 && value > highScore) { highScore = value; localStorage.setItem('scvr-highscore', String(value)); }
       if (kind === 9) { state.texts[value] = ''; state.panelDirty = true; }
       if (kind === 5 || kind === 6 || kind === 7) state.panelDirty = true;
-      if (kind === 3) state.ballInPlunger = value === 1;
-      if (kind === 2) state.gameOver = value === 2;
+      if (kind === 3) { if (state.ballInPlunger && value === 0) state.hasLaunched = true; state.ballInPlunger = value === 1; }
+      if (kind === 5) { state.score = value; updateMiniScore(); }
+      if (kind === 6) { state.ball = value; updateMiniScore(); }
+      if (kind === 2) {
+        const over = value === 2;
+        if (over && !state.gameOver) {
+          localStorage.setItem('scvr-last', String(state.score || 0));
+          updateStats();
+        }
+        state.gameOver = over;
+      }
     },
   });
   const wasm = await WebAssembly.compileStreaming(fetch('engine.wasm'));
@@ -522,30 +645,40 @@ function press(button, down) {
   }
 }
 
-function newGame() { state.engine.x.scp_new_game(); state.paused = false; state.gameOver = false; state.texts = { 1: '', 2: '' }; state.panelDirty = true; }
-function togglePause() { state.engine.x.scp_pause(); state.paused = !!state.engine.x.scp_is_paused(); }
+function newGame() { if (state.paused) togglePause(false); state.pausedByMenu = false; state.engine.x.scp_new_game(); state.paused = false; state.gameOver = false; state.hasLaunched = false; state.texts = { 1: '', 2: '' }; state.panelDirty = true; }
+function togglePause(force) {
+  if (force !== undefined && force === state.paused) return;
+  state.engine.x.scp_pause();
+  state.paused = !!state.engine.x.scp_is_paused();
+  if (state.paused) state.audio.ctx.suspend().catch(() => {}); else state.audio.resume();
+  if (state.paused) for (const key of [...state.held]) press(Number(key.slice(1)), false);
+}
 
 // ---------------------------------------------------------------- XR controllers
+// Triggers flip. Grips nudge: left grip nudges left, right grip right, both together nudge up.
+// The right stick also nudges, for anyone who prefers it.
 function pollXR() {
   const session = renderer.xr.getSession();
   if (!session) return;
+  const sources = {};
   for (const src of session.inputSources) {
     const gp = src.gamepad;
     if (!gp || src.hand || (src.handedness !== 'left' && src.handedness !== 'right')) continue;
     const left = src.handedness === 'left';
     const b = (i) => !!(gp.buttons[i] && (gp.buttons[i].pressed || gp.buttons[i].value > 0.5));
     const prev = state.padPrev.get(src.handedness) || {};
-    const now = { flip: b(0) || b(1), plunge: b(4), menu: b(5), stick: b(3) };
+    const ax = gp.axes[2] || 0, ay = gp.axes[3] || 0;
+    const now = {
+      flip: b(0), grip: b(1), plunge: b(4), menu: b(5), stick: b(3),
+      sl: !left && ax < -0.75, sr: !left && ax > 0.75, su: !left && ay < -0.75,
+    };
+    sources[src.handedness] = { src, now, prev };
 
-    if ((now.flip && !prev.flip) || (now.plunge && !prev.plunge)) state.audio.resume();
+    if ((now.flip && !prev.flip) || (now.plunge && !prev.plunge) || (now.grip && !prev.grip)) state.audio.resume();
     press(left ? BTN.LeftFlipper : BTN.RightFlipper, now.flip);
     if (now.flip && !prev.flip) pulse(src, 0.35, 25);
-
-    const otherPlunge = state.padPrev.get(left ? 'right' : 'left');
-    press(BTN.Plunger, now.plunge || !!(otherPlunge && otherPlunge.plunge));
     if (!now.plunge && prev.plunge) pulse(src, 0.8, 60);
 
-    const ax = gp.axes[2] || 0, ay = gp.axes[3] || 0;
     if (left) {
       if (Math.abs(ay) > 0.3) {
         state.heightOffset = THREE.MathUtils.clamp(state.heightOffset - ay * 0.004, -0.4, 0.4);
@@ -554,16 +687,42 @@ function pollXR() {
       }
       if (now.stick && !prev.stick) recenter();
       if (now.menu && !prev.menu) newGame();
-    } else {
-      press(BTN.NudgeLeft, ax < -0.75);
-      press(BTN.NudgeRight, ax > 0.75);
-      press(BTN.NudgeUp, ay < -0.75);
-      if ((ax < -0.75 && !prev.nl) || (ax > 0.75 && !prev.nr) || (ay < -0.75 && !prev.nu)) pulse(src, 0.6, 50);
-      now.nl = ax < -0.75; now.nr = ax > 0.75; now.nu = ay < -0.75;
-      if (now.menu && !prev.menu) togglePause();
-    }
+    } else if (now.menu && !prev.menu) togglePause();
     state.padPrev.set(src.handedness, now);
   }
+
+  const L = sources.left, R = sources.right;
+  const gl = !!(L && L.now.grip), gr = !!(R && R.now.grip);
+  const stick = R ? R.now : {};
+  const nudge = { left: (gl && !gr) || !!stick.sl, right: (gr && !gl) || !!stick.sr, up: (gl && gr) || !!stick.su };
+  const was = state.nudgeHeld || {};
+  press(BTN.NudgeLeft, nudge.left);
+  press(BTN.NudgeRight, nudge.right);
+  press(BTN.NudgeUp, nudge.up);
+  if ((nudge.left && !was.left) || (nudge.right && !was.right) || (nudge.up && !was.up)) {
+    for (const h of [L, R]) if (h) pulse(h.src, 0.7, 70);
+    shakeTable(nudge.left ? -1 : nudge.right ? 1 : 0, nudge.up ? 1 : 0);
+  }
+  state.plungeHeld = !!((L && L.now.plunge) || (R && R.now.plunge));
+  press(BTN.Plunger, state.plungeHeld || state.handPinch.size === 2);
+  state.nudgeHeld = nudge;
+}
+
+function updateShake(dt) {
+  const tilt = state.machine && state.machine.children[0];
+  if (!tilt) return;
+  const sh = state.shake;
+  if (!sh) { tilt.position.set(0, 0, 0); return; }
+  sh.t += dt;
+  const k = Math.max(0, 1 - sh.t / 180) * Math.sin(sh.t / 180 * Math.PI);
+  tilt.position.set(sh.dx * 0.006 * k, 0, -sh.dz * 0.008 * k);
+  if (sh.t >= 180) state.shake = null;
+}
+
+// A small visible bump of the cabinet when you nudge it
+function shakeTable(dx, dz) {
+  if (!state.machine) return;
+  state.shake = { t: 0, dx, dz };
 }
 
 function releaseAll() {
@@ -582,6 +741,15 @@ function handPinch(e, down) {
   press(BTN.Plunger, state.handPinch.size === 2);
 }
 
+function updateHelpCard(dt) {
+  const card = state.helpCard;
+  if (!card) return;
+  const want = renderer.xr.isPresenting && (state.paused || !state.hasLaunched || state.gameOver);
+  const m = card.material;
+  m.opacity = THREE.MathUtils.clamp(m.opacity + (want ? 1 : -1) * dt / 300, 0, 1);
+  card.visible = m.opacity > 0.01;
+}
+
 function updateSign() {
   const sg = state.sign;
   if (!sg) return;
@@ -592,6 +760,15 @@ function updateSign() {
   else if (state.gameOver) text = 'Game over \u00b7 press Y for a new game';
   else if (state.ballInPlunger) text = handsOnly ? 'Pinch with both hands, then let go to launch' : 'Hold A or X, then let go to launch';
   sg.mesh.visible = xr && !!text;
+  if (!xr) {
+    const touch = matchMedia('(pointer: coarse)').matches;
+    let flat = '';
+    if (state.paused) flat = touch ? 'Paused \u00b7 tap to carry on' : 'Paused \u00b7 press P to carry on';
+    else if (state.gameOver) flat = touch ? 'Game over \u00b7 open Menu for a new game' : 'Game over \u00b7 F2 for a new game';
+    else if (state.ballInPlunger) flat = touch ? 'Hold the middle, then let go to launch' : 'Hold Space, then let go to launch';
+    const banner = $('banner');
+    if (banner.textContent !== flat) banner.textContent = flat;
+  }
   if (text === sg.text) return;
   sg.text = text;
   const x = sg.canvas.getContext('2d');
@@ -663,6 +840,9 @@ function loop(time) {
     }
     updateTable();
     updateSign();
+    updateShake(dt);
+    updateHelpCard(dt);
+    updateHands();
     state.panelTimer += dt;
     if (state.panelDirty && state.panelTimer > 100) { state.panelTimer = 0; state.panelDirty = false; drawPanel(); }
   }
@@ -673,14 +853,20 @@ renderer.setAnimationLoop(loop);
 window.__scvr = state;
 
 // ---------------------------------------------------------------- flat-screen view
-const orbit = { yaw: 0, pitch: 0.95, dist: 0.95, drag: null };
+// The camera frames the whole table on any screen shape; drag and scroll adjust from there
+const orbit = { yaw: 0, pitch: null, zoom: 1, drag: null };
+state.orbit = orbit;
 function updateFlatCamera() {
   if (!state.machine) return;
   const target = new THREE.Vector3();
   state.machine.getWorldPosition(target);
   target.y -= 0.02;
   target.z += 0.08;
-  const d = orbit.dist;
+  const aspect = camera.aspect;
+  if (orbit.pitch === null) orbit.pitch = aspect < 1 ? 1.2 : 0.95;
+  const halfFov = THREE.MathUtils.degToRad(camera.fov / 2);
+  const fitWidth = 0.37 / (Math.tan(halfFov) * aspect);
+  const d = Math.max(0.95, fitWidth) * orbit.zoom;
   camera.position.set(target.x + Math.sin(orbit.yaw) * Math.cos(orbit.pitch) * d,
     target.y + Math.sin(orbit.pitch) * d, target.z + Math.cos(orbit.yaw) * Math.cos(orbit.pitch) * d);
   camera.lookAt(target);
@@ -693,7 +879,7 @@ addEventListener('pointermove', (e) => {
   orbit.pitch = THREE.MathUtils.clamp(orbit.pitch + (e.clientY - orbit.drag[1]) * 0.005, 0.1, 1.45);
   orbit.drag = [e.clientX, e.clientY];
 });
-renderer.domElement.addEventListener('wheel', (e) => { orbit.dist = THREE.MathUtils.clamp(orbit.dist * (1 + e.deltaY * 0.001), 0.5, 3); }, { passive: true });
+renderer.domElement.addEventListener('wheel', (e) => { orbit.zoom = THREE.MathUtils.clamp(orbit.zoom * (1 + e.deltaY * 0.001), 0.5, 2.5); }, { passive: true });
 
 addEventListener('keydown', (e) => {
   if (!state.running) return;
@@ -703,6 +889,7 @@ addEventListener('keydown', (e) => {
   if (!k || e.repeat) return;
   state.audio.resume();
   state.engine.input(InputType.Keyboard, SDLK[k], true);
+  if (k === 'x') shakeTable(-1, 0); else if (k === '.') shakeTable(1, 0); else if (k === 'up') shakeTable(0, 1);
   e.preventDefault();
 });
 addEventListener('keyup', (e) => {
@@ -711,12 +898,42 @@ addEventListener('keyup', (e) => {
   if (k) state.engine.input(InputType.Keyboard, SDLK[k], false);
 });
 
-// Touch buttons for phones
+// Touch controls for phones: left/right flip, hold the middle to launch, swipe to nudge
+const buzz = (ms) => { try { navigator.vibrate && navigator.vibrate(ms); } catch {} };
+let touchCount = 0;
+function tapNudge(btn, dx, dz) {
+  press(btn, true);
+  setTimeout(() => press(btn, false), 120);
+  shakeTable(dx, dz);
+  buzz(35);
+}
 for (const [id, btn] of [['t-left', BTN.LeftFlipper], ['t-right', BTN.RightFlipper], ['t-plunge', BTN.Plunger]]) {
   const el = $(id);
-  el.addEventListener('pointerdown', (e) => { e.preventDefault(); state.audio && state.audio.resume(); el.setPointerCapture(e.pointerId); press(btn, true); });
-  el.addEventListener('pointerup', () => press(btn, false));
-  el.addEventListener('pointercancel', () => press(btn, false));
+  const starts = new Map();
+  const up = (e) => { starts.delete(e.pointerId); el.classList.remove('on'); press(btn, false); };
+  el.addEventListener('pointerdown', (e) => {
+    e.preventDefault();
+    state.audio && state.audio.resume();
+    if (state.paused) { togglePause(false); return; }
+    el.setPointerCapture(e.pointerId);
+    starts.set(e.pointerId, { x: e.clientX, y: e.clientY, t: performance.now(), done: false });
+    el.classList.add('on');
+    press(btn, true);
+    if (btn !== BTN.Plunger) buzz(8);
+    if (++touchCount > 6) $('touch').classList.remove('hint');
+  });
+  el.addEventListener('pointermove', (e) => {
+    const st = starts.get(e.pointerId);
+    if (!st || st.done || performance.now() - st.t > 350) return;
+    const dx = e.clientX - st.x, dy = e.clientY - st.y;
+    if (Math.hypot(dx, dy) < 45) return;
+    st.done = true;
+    if (-dy > Math.abs(dx)) tapNudge(BTN.NudgeUp, 0, 1);
+    else if (dx < 0) tapNudge(BTN.NudgeLeft, -1, 0);
+    else tapNudge(BTN.NudgeRight, 1, 0);
+  });
+  el.addEventListener('pointerup', up);
+  el.addEventListener('pointercancel', up);
   el.addEventListener('contextmenu', (e) => e.preventDefault());
 }
 // Belt and braces for browsers that still start a selection on long press during play
@@ -738,19 +955,17 @@ async function enterXR(mode) {
     world.visible = !passthrough;
     scene.background = passthrough ? null : new THREE.Color(0x07060f);
     state.mode = mode;
-    if (state.helpCard) state.helpCard.visible = true;
     document.body.classList.add('in-xr');
     session.addEventListener('end', () => {
       releaseAll();
       world.visible = true;
       scene.background = new THREE.Color(0x07060f);
       state.mode = 'flat';
-      if (state.helpCard) state.helpCard.visible = false;
       rig.position.set(0, 0, 0); rig.rotation.y = 0;
       document.body.classList.remove('in-xr');
     });
     session.addEventListener('visibilitychange', () => {
-      if (session.visibilityState !== 'visible' && !state.paused) togglePause();
+      if (session.visibilityState !== 'visible') togglePause(true);
     });
     // Some browsers keep audio suspended until a press inside the headset; unlock on any controller press
     const unlock = () => state.audio && state.audio.resume();
@@ -776,6 +991,8 @@ async function begin(files) {
     $('loading').hidden = true;
     $('play-step').hidden = false;
     document.body.classList.add('ready');
+    state.audio.master.gain.value = savedVolume / 100;
+    updateStats();
   } catch (e) {
     $('loading').hidden = true;
     $('load-step').hidden = false;
@@ -811,9 +1028,45 @@ $('folder-input').addEventListener('change', async (e) => {
 
 $('enter-vr').addEventListener('click', () => enterXR('immersive-vr'));
 $('enter-ar').addEventListener('click', () => enterXR('immersive-ar'));
-$('play-flat').addEventListener('click', () => { state.audio.resume(); document.body.classList.add('flat-play'); });
-$('menu-btn').addEventListener('click', () => document.body.classList.remove('flat-play'));
-$('new-game').addEventListener('click', newGame);
+$('play-flat').addEventListener('click', () => {
+  state.audio.resume();
+  document.body.classList.add('flat-play');
+  if (state.pausedByMenu) { state.pausedByMenu = false; togglePause(false); }
+  state.menuFromFlat = false;
+});
+$('menu-btn').addEventListener('click', () => {
+  document.body.classList.remove('flat-play');
+  state.menuFromFlat = true;
+  if (!state.paused) { state.pausedByMenu = true; togglePause(true); }
+  updateStats();
+});
+document.addEventListener('visibilitychange', () => {
+  if (document.hidden && state.running && !renderer.xr.isPresenting && !state.paused) togglePause(true);
+});
+addEventListener('keydown', (e) => { if (state.paused && state.running && KEYS[e.key]) togglePause(false); });
+
+function updateMiniScore() {
+  const el = $('mini-score');
+  if (el) el.textContent = `Ball ${state.ball || 1} \u00b7 ${(state.score || 0).toLocaleString()}`;
+}
+
+function updateStats() {
+  const best = Math.max(Number(localStorage.getItem('scvr-highscore') || 0), 0);
+  const last = localStorage.getItem('scvr-last');
+  $('best').textContent = best.toLocaleString();
+  $('last').textContent = last === null ? '\u2013' : Number(last).toLocaleString();
+  $('stats').hidden = !state.running;
+}
+const savedVolume = Number(localStorage.getItem('scvr-volume') ?? 80);
+$('volume').value = String(savedVolume);
+$('volume').addEventListener('input', (e) => {
+  localStorage.setItem('scvr-volume', e.target.value);
+  if (state.audio) state.audio.master.gain.value = Number(e.target.value) / 100;
+});
+$('new-game').addEventListener('click', () => {
+  newGame();
+  if (state.menuFromFlat) { state.menuFromFlat = false; document.body.classList.add('flat-play'); }
+});
 $('players').addEventListener('change', (e) => { state.engine.x.scp_set_players(Number(e.target.value)); });
 $('music').checked = localStorage.getItem('scvr-music') === '1';
 $('music').addEventListener('change', (e) => {

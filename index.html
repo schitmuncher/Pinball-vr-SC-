@@ -33,8 +33,21 @@
     padding: 26px 26px 22px; backdrop-filter: blur(8px);
     box-shadow: 0 30px 80px rgba(0,0,0,0.6);
   }
-  h1 { margin: 0 0 4px; font-size: 28px; letter-spacing: 0.01em; }
-  h1 span { color: var(--accent); }
+  h1 { margin: 0 0 4px; font-size: 30px; letter-spacing: 0.005em; line-height: 1.1; }
+  h1 span { background: linear-gradient(90deg, #a99bff, #46dcff); -webkit-background-clip: text; background-clip: text; color: transparent; }
+  .card::before { content: ""; position: absolute; inset: 0 0 auto 0; height: 3px; border-radius: 18px 18px 0 0; background: linear-gradient(90deg, #9a7bff, #37e0ff); }
+  .stats { display: flex; gap: 10px; margin: 14px 0 2px; }
+  .stat { flex: 1; background: rgba(29,25,64,0.7); border: 1px solid var(--line); border-radius: 12px; padding: 8px 12px; }
+  .stat b { display: block; font-size: 20px; font-variant-numeric: tabular-nums; }
+  .stat span { color: var(--muted); font-size: 12px; text-transform: uppercase; letter-spacing: 0.08em; }
+  button.big { font-size: 18px; padding: 14px 24px; }
+  input[type=range] { accent-color: var(--accent); width: 110px; vertical-align: middle; }
+  details { margin-top: 14px; border-top: 1px solid var(--line); padding-top: 10px; }
+  summary { cursor: pointer; color: var(--muted); font-weight: 600; }
+  table.ctl { width: 100%; border-collapse: collapse; font-size: 14px; margin-top: 8px; }
+  table.ctl th { text-align: left; color: var(--accent); font-weight: 600; padding: 10px 0 4px; font-size: 12px; text-transform: uppercase; letter-spacing: 0.08em; }
+  table.ctl td { padding: 3px 0; vertical-align: top; }
+  table.ctl td:first-child { color: var(--muted); width: 44%; padding-right: 10px; }
   .sub { color: var(--muted); margin: 0 0 18px; }
   h2 { font-size: 15px; text-transform: uppercase; letter-spacing: 0.08em; color: var(--muted); margin: 20px 0 8px; }
   p { margin: 8px 0; }
@@ -68,8 +81,19 @@
   .touch div { position: absolute; bottom: 0; top: 0; }
   #t-left { left: 0; width: 40%; }
   #t-right { right: 0; width: 40%; }
-  #t-plunge { left: 40%; width: 20%; display: flex; align-items: flex-end; justify-content: center; padding-bottom: 20px; color: var(--muted); font-size: 13px; }
-  @media (pointer: coarse) { .touch { display: block; } .keys { display: none; } #hud-panel { width: 110px; } }
+  #t-plunge { left: 40%; width: 20%; }
+  #banner { position: fixed; left: 50%; top: 14px; transform: translateX(-50%); background: rgba(12,10,30,0.86); border: 1px solid var(--line);
+    padding: 8px 18px; border-radius: 999px; font-weight: 600; white-space: nowrap; transition: opacity 0.25s; pointer-events: none; }
+  #banner:empty { opacity: 0; }
+  .touch div { transition: background 0.15s; }
+  .touch div.on { background: rgba(141,134,255,0.12); }
+  .touch.hint #t-left, .touch.hint #t-right { background: linear-gradient(to top, rgba(141,134,255,0.16), transparent); }
+  .touch .lbl { position: absolute; bottom: 18px; left: 0; right: 0; text-align: center; color: var(--muted); font-size: 13px; transition: opacity 0.6s; }
+  .touch:not(.hint) .lbl { opacity: 0; }
+  #mini-score { display: none; position: fixed; right: 12px; top: 14px; background: rgba(12,10,30,0.86); border: 1px solid var(--line);
+    padding: 8px 14px; border-radius: 12px; font-weight: 700; font-variant-numeric: tabular-nums; }
+  @media (pointer: coarse) and (orientation: portrait) { #hud-panel { display: none; } #mini-score { display: block; } }
+  @media (pointer: coarse) { .touch { display: block; } .keys { display: none; } #hud-panel { width: 110px; top: 60px; } #banner { top: 64px; font-size: 14px; } }
 </style>
 </head>
 <body>
@@ -78,6 +102,10 @@
 <div class="card" id="card">
   <h1>Space Cadet <span>Pinball VR</span></h1>
   <p class="sub">The original table, physics and sounds, rebuilt as a real 3D machine you stand at on Meta Quest.</p>
+  <div class="stats" id="stats" hidden>
+    <div class="stat"><span>Best score</span><b id="best">0</b></div>
+    <div class="stat"><span>Last game</span><b id="last">–</b></div>
+  </div>
 
   <section id="load-step">
     <h2>1 · Load your game files</h2>
@@ -95,20 +123,44 @@
   </section>
 
   <section id="play-step" hidden>
-    <h2>2 · Play</h2>
     <div class="btns">
-      <button class="primary" id="enter-vr" hidden>Play in VR</button>
-      <button id="enter-ar" hidden>Play in your room</button>
+      <button class="primary big" id="enter-vr" hidden>Play in VR</button>
+      <button class="big" id="enter-ar" hidden>Play in your room</button>
       <button id="play-flat">Play on this screen</button>
     </div>
     <p class="note" id="no-xr" hidden>No VR headset found here. Open this page in the Meta Quest browser to play in VR.</p>
     <div class="row">
       <label>Players <select id="players"><option>1</option><option>2</option><option>3</option><option>4</option></select></label>
+      <label>Volume <input type="range" id="volume" min="0" max="100" value="80"></label>
       <label><input type="checkbox" id="music"> Music</label>
+    </div>
+    <div class="row">
       <button class="linkish" id="new-game">New game</button>
       <button class="linkish" id="forget">Use different files</button>
     </div>
-    <p class="note">In VR: triggers or grips flip, hold A or X to pull the plunger and let go to launch, flick the right stick to nudge. B pauses, Y starts a new game. Click the left stick to move the table in front of you, push it up or down to change the height. With hand tracking, pinch to flip and pinch with both hands to launch.</p>
+    <details>
+      <summary>Controls</summary>
+      <table class="ctl">
+        <tr><th colspan="2">Quest controllers</th></tr>
+        <tr><td>Triggers</td><td>Flippers</td></tr>
+        <tr><td>A or X (hold, let go)</td><td>Plunger</td></tr>
+        <tr><td>Grips</td><td>Nudge left / right, both grips nudge up</td></tr>
+        <tr><td>B / Y</td><td>Pause / new game</td></tr>
+        <tr><td>Left stick</td><td>Up/down: table height · click: move table to you</td></tr>
+        <tr><th colspan="2">Hand tracking</th></tr>
+        <tr><td>Pinch</td><td>Flipper on that side · both hands: launch</td></tr>
+        <tr><th colspan="2">Keyboard</th></tr>
+        <tr><td>Z and /</td><td>Flippers</td></tr>
+        <tr><td>Space</td><td>Plunger</td></tr>
+        <tr><td>X . and ↑</td><td>Nudge left / right / up</td></tr>
+        <tr><td>P · F2</td><td>Pause · new game</td></tr>
+        <tr><th colspan="2">Touch</th></tr>
+        <tr><td>Left / right side</td><td>Flippers</td></tr>
+        <tr><td>Middle (hold)</td><td>Plunger</td></tr>
+        <tr><td>Swipe left, right or up</td><td>Nudge</td></tr>
+      </table>
+      <p class="note">Nudge too often and the table tilts, just like the original.</p>
+    </details>
   </section>
 
   <div id="error" hidden></div>
@@ -116,9 +168,11 @@
 
 <div id="flat-ui">
   <button id="menu-btn">Menu</button>
+  <div id="banner"></div>
+  <div id="mini-score">Ball 1 · 0</div>
   <div id="hud-panel"></div>
-  <div class="keys">Z / slash: flippers · Space: plunger · X . ↑: nudge · F2: new game · P: pause · drag to look around</div>
-  <div class="touch"><div id="t-left"></div><div id="t-plunge">hold to launch</div><div id="t-right"></div></div>
+  <div class="keys">Z / slash: flippers · Space: plunger · X . ↑: nudge · F2: new game · P: pause · drag to look around, scroll to zoom</div>
+  <div class="touch hint" id="touch"><div id="t-left"><span class="lbl">flipper</span></div><div id="t-plunge"><span class="lbl">hold to launch</span></div><div id="t-right"><span class="lbl">flipper</span></div></div>
 </div>
 
 <script type="module" src="app.js"></script>

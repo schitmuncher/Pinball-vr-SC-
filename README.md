@@ -15,9 +15,9 @@ chrome sphere.
 
 | Quest controls | |
 |---|---|
-| Triggers or grips | Flippers |
+| Triggers | Flippers |
 | A or X (hold, then let go) | Plunger |
-| Right stick flick | Nudge left / right / up |
+| Grips | Nudge left / right (both grips: nudge up) |
 | B | Pause |
 | Y | New game |
 | Left stick up/down | Table height |
@@ -25,7 +25,7 @@ chrome sphere.
 | Hand tracking | Pinch to flip, pinch with both hands to launch |
 
 On a computer: Z and / flip, Space is the plunger, X . and ↑ nudge, F2 new game, P pause.
-On a phone: tap the left or right side to flip, hold the middle to launch.
+On a phone: tap the left or right side to flip, hold the middle to launch, swipe left, right or up to nudge.
 
 ## Hosting on GitHub Pages
 
