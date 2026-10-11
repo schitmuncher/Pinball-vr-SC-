@@ -20,6 +20,8 @@ const state = {
   held: new Set(), padPrev: new Map(), mode: 'flat',
   ballInPlunger: false, gameOver: false, needsRecenter: false, handPinch: new Set(),
   heightOffset: Number(localStorage.getItem('scvr-height') || 0),
+  tableScale: THREE.MathUtils.clamp(Number(localStorage.getItem('scvr-scale') || 1), 0.4, 2),
+  frameDt: 16,
 };
 
 // ---------------------------------------------------------------- three.js setup
@@ -571,10 +573,9 @@ function makeHelpCard() {
     ['A or X (hold)', 'Pull plunger, let go to launch'],
     ['Grip on a side rail', 'Grab: move and turn the table'],
     ['Grip elsewhere', 'Nudge (both grips: nudge up)'],
-    ['B', 'Pause'],
+    ['B / left stick click', 'Menu: move, resize, exit VR'],
     ['Y', 'New game'],
     ['Left stick ↑↓', 'Table height'],
-    ['Left stick click', 'Move table in front of you'],
     ['Hands only', 'Pinch to flip, both to launch'],
   ];
   x.fillStyle = '#8f8cc0'; x.font = '21px system-ui, sans-serif';
@@ -591,8 +592,11 @@ function makeHelpCard() {
 function placeMachineDefault() {
   const b = state.tableBounds;
   const len = b.maxZ - b.minZ;
-  state.machine.position.set(0, 0.9 + Math.sin(TILT) * len / 2 + state.heightOffset, -len / 2 - 0.22);
-  if (state.floorGlow) state.floorGlow.position.y = -state.machine.position.y + 0.004;
+  const sc = state.tableScale;
+  state.machine.scale.setScalar(sc);
+  // Legs stay on the floor at any size; height offset lifts or lowers the whole machine
+  state.machine.position.set(0, (0.9 + Math.sin(TILT) * len / 2) * sc + state.heightOffset, -(len / 2 + 0.22) * sc);
+  if (state.floorGlow) state.floorGlow.position.y = -state.machine.position.y / sc + 0.004;
 }
 
 // Recenter: put the machine in front of wherever the player is now standing and facing
@@ -735,24 +739,32 @@ function pollXR() {
     sources[src.handedness] = { src, now, prev };
 
     if ((now.flip && !prev.flip) || (now.plunge && !prev.plunge) || (now.grip && !prev.grip)) state.audio.resume();
-    press(left ? BTN.LeftFlipper : BTN.RightFlipper, now.flip);
-    if (now.flip && !prev.flip) pulse(src, 0.35, 25);
-    if (!now.plunge && prev.plunge) pulse(src, 0.8, 60);
+    const playing = !vrMenu.open && !repo.active;
+    now.ax = ax; now.ay = ay;
+    press(left ? BTN.LeftFlipper : BTN.RightFlipper, playing && now.flip);
+    if (playing && now.flip && !prev.flip) pulse(src, 0.35, 25);
+    if (playing && !now.plunge && prev.plunge) pulse(src, 0.8, 60);
 
-    if (left) {
-      if (Math.abs(ay) > 0.3) {
-        state.heightOffset = THREE.MathUtils.clamp(state.heightOffset - ay * 0.004, -0.4, 0.4);
-        placeMachineDefault();
-        localStorage.setItem('scvr-height', state.heightOffset.toFixed(3));
-      }
-      if (now.stick && !prev.stick) recenter();
-      if (now.menu && !prev.menu) newGame();
-    } else if (now.menu && !prev.menu) togglePause();
+    // B or a left-stick click opens the menu (and closes it, or finishes moving the table)
+    const menuBtn = (!left && now.menu && !prev.menu) || (left && now.stick && !prev.stick);
+    if (menuBtn) {
+      if (repo.active) endReposition();
+      else if (vrMenu.open) closeMenu(true);
+      else openMenu();
+    } else if (left && now.menu && !prev.menu && playing) newGame();
+    else if (!left && repo.active && now.plunge && !prev.plunge) endReposition();
+    if (left && playing && Math.abs(ay) > 0.3) adjustHeight(-ay * 0.004);
     state.padPrev.set(src.handedness, now);
   }
 
   const L = sources.left, R = sources.right;
+  updateMenuAndRepo(L, R);
   updateGrab(L, R);
+  if (vrMenu.open || repo.active) {
+    for (const b of [BTN.NudgeLeft, BTN.NudgeRight, BTN.NudgeUp, BTN.Plunger]) press(b, false);
+    state.nudgeHeld = {};
+    return;
+  }
   const gl = !!(L && L.now.grip && state.gripMode.left === 'nudge');
   const gr = !!(R && R.now.grip && state.gripMode.right === 'nudge');
   const stick = R ? R.now : {};
@@ -860,6 +872,14 @@ function updateGrab(L, R) {
       p = _a.add(_b).multiplyScalar(0.5);
     }
     const dyaw = yaw - g.yaw0;
+    // In reposition mode, pulling two hands apart or together resizes the table
+    if (repo.active && g.hands.length === 2) {
+      const dist = _b.distanceTo(_a.clone().multiplyScalar(2).sub(_b));
+      if (!g.dist0) { g.dist0 = dist; g.scale0 = state.tableScale; }
+      state.tableScale = THREE.MathUtils.clamp(g.scale0 * dist / g.dist0, 0.4, 2);
+      placeMachineDefault();
+      localStorage.setItem('scvr-scale', state.tableScale.toFixed(3));
+    }
     _off.copy(g.rigPos).sub(g.p0).applyAxisAngle(YAXIS, dyaw);
     rig.position.copy(p).add(_off);
     rig.position.y = THREE.MathUtils.clamp(rig.position.y, -0.6, 0.8);
@@ -871,6 +891,256 @@ function updateGrab(L, R) {
   if (c) for (const side of ['left', 'right']) {
     const hover = state.hover.left === side || state.hover.right === side;
     c.sideNeon[side].color.setHex(state.grabHands.size && hover ? 0x37e0ff : hover ? 0xffffff : 0x9a7bff);
+  }
+}
+
+// ---------------------------------------------------------------- VR menu and reposition mode
+// Laser pointers for the menu and for placing the table, one per controller
+const rayCtl = {};
+const laserGeo = new THREE.BufferGeometry().setFromPoints([new THREE.Vector3(0, 0, 0), new THREE.Vector3(0, 0, -1)]);
+for (let i = 0; i < 2; i++) {
+  const c = renderer.xr.getController(i);
+  c.addEventListener('connected', (e) => { c.userData.hand = e.data.handedness; rayCtl[e.data.handedness] = c; });
+  c.addEventListener('disconnected', () => { if (rayCtl[c.userData.hand] === c) delete rayCtl[c.userData.hand]; });
+  const laser = new THREE.Line(laserGeo, new THREE.LineBasicMaterial({ color: 0xb9b0ff, transparent: true, opacity: 0.85, toneMapped: false }));
+  laser.visible = false;
+  c.add(laser);
+  c.userData.laser = laser;
+  scene.add(c);
+}
+
+function adjustHeight(delta) {
+  state.heightOffset = THREE.MathUtils.clamp(state.heightOffset + delta, -0.5, 0.6);
+  placeMachineDefault();
+  localStorage.setItem('scvr-height', state.heightOffset.toFixed(3));
+}
+function adjustScale(factor) {
+  state.tableScale = THREE.MathUtils.clamp(state.tableScale * factor, 0.4, 2);
+  placeMachineDefault();
+  localStorage.setItem('scvr-scale', state.tableScale.toFixed(3));
+}
+// Turn the table about its own middle rather than about the room's origin
+const _c = new THREE.Vector3(), _d = new THREE.Vector3();
+function turnTable(dyaw) {
+  state.machine.getWorldPosition(_c);
+  _d.copy(rig.position).sub(_c).applyAxisAngle(YAXIS, dyaw);
+  rig.position.set(_c.x + _d.x, rig.position.y, _c.z + _d.z);
+  rig.rotation.y += dyaw;
+}
+// Put the middle of the table at a point on the floor, keeping its current direction
+function placeTableAt(x, z) {
+  state.machine.getWorldPosition(_c);
+  rig.position.x += x - _c.x;
+  rig.position.z += z - _c.z;
+}
+
+const vrMenu = { open: false, hover: -1, hoverHand: null, items: [] };
+const repo = { active: false };
+state.vrMenu = vrMenu; state.repo = repo;
+
+function menuItems() {
+  return [
+    ['resume', 'Resume'],
+    ['reposition', 'Move, turn & resize table'],
+    ['recenter', 'Bring table to me'],
+    ['reset', 'Reset size & height'],
+    ['newgame', 'New game'],
+    ['music', state.engine && localStorage.getItem('scvr-music') === '1' ? 'Music: on' : 'Music: off'],
+    ['exit', 'Exit VR'],
+  ];
+}
+const MENU_W = 512, ROW = 76, TOP = 86;
+const menuCanvas = document.createElement('canvas');
+menuCanvas.width = MENU_W;
+const menuTex = new THREE.CanvasTexture(menuCanvas);
+menuTex.colorSpace = THREE.SRGBColorSpace;
+const menuMesh = new THREE.Mesh(new THREE.PlaneGeometry(1, 1), new THREE.MeshBasicMaterial({ map: menuTex, transparent: true, toneMapped: false, depthTest: false }));
+menuMesh.renderOrder = 10;
+menuMesh.visible = false;
+scene.add(menuMesh);
+
+function drawMenu() {
+  const items = vrMenu.items = menuItems();
+  const H = TOP + items.length * ROW + 18;
+  if (menuCanvas.height !== H) menuCanvas.height = H;
+  const x = menuCanvas.getContext('2d');
+  x.clearRect(0, 0, MENU_W, H);
+  x.fillStyle = 'rgba(12,10,30,0.92)';
+  x.beginPath(); x.roundRect(0, 0, MENU_W, H, 28); x.fill();
+  x.strokeStyle = '#7f7cff'; x.lineWidth = 4; x.beginPath(); x.roundRect(2, 2, MENU_W - 4, H - 4, 26); x.stroke();
+  x.fillStyle = '#fff'; x.font = 'bold 36px system-ui, sans-serif'; x.textBaseline = 'middle';
+  x.fillText('Menu', 28, 46);
+  x.fillStyle = '#8f8cc0'; x.font = '20px system-ui, sans-serif'; x.textAlign = 'right';
+  x.fillText('point & pull trigger', MENU_W - 28, 48);
+  x.textAlign = 'left';
+  items.forEach(([id, label], i) => {
+    const y = TOP + i * ROW;
+    const hot = i === vrMenu.hover;
+    x.fillStyle = id === 'exit' ? (hot ? '#ff4d7d' : '#4a1730') : hot ? '#8d86ff' : '#211c4a';
+    x.beginPath(); x.roundRect(20, y, MENU_W - 40, ROW - 12, 16); x.fill();
+    x.fillStyle = hot ? (id === 'exit' ? '#fff' : '#0b0820') : '#ecebff';
+    x.font = '600 30px system-ui, sans-serif';
+    x.fillText(label, 44, y + (ROW - 12) / 2 + 1);
+  });
+  menuTex.needsUpdate = true;
+  menuMesh.scale.set(0.42, 0.42 * H / MENU_W, 1);
+}
+
+const _hp2 = new THREE.Vector3(), _hq2 = new THREE.Quaternion();
+function openMenu() {
+  vrMenu.open = true;
+  vrMenu.hover = -1;
+  if (!state.paused) togglePause(true);
+  for (const key of [...state.held]) press(Number(key.slice(1)), false);
+  drawMenu();
+  // Float it in front of your face, upright and facing you
+  const cam = renderer.xr.getCamera();
+  cam.getWorldPosition(_hp2);
+  cam.getWorldQuaternion(_hq2);
+  _fw.set(0, 0, -1).applyQuaternion(_hq2); _fw.y = 0; _fw.normalize();
+  menuMesh.position.copy(_hp2).addScaledVector(_fw, 0.6);
+  menuMesh.position.y -= 0.12;
+  menuMesh.rotation.set(0, Math.atan2(-_fw.x, -_fw.z), 0);
+  menuMesh.visible = true;
+}
+function closeMenu(resume) {
+  vrMenu.open = false;
+  menuMesh.visible = false;
+  if (resume && state.paused) togglePause(false);
+}
+function menuAction(id) {
+  if (id === 'resume') closeMenu(true);
+  else if (id === 'reposition') { closeMenu(false); startReposition(); }
+  else if (id === 'recenter') { recenter(); closeMenu(true); }
+  else if (id === 'reset') { state.tableScale = 1; state.heightOffset = 0; localStorage.removeItem('scvr-scale'); localStorage.removeItem('scvr-height'); placeMachineDefault(); drawMenu(); }
+  else if (id === 'newgame') { closeMenu(false); newGame(); }
+  else if (id === 'music') {
+    const on = localStorage.getItem('scvr-music') !== '1';
+    localStorage.setItem('scvr-music', on ? '1' : '0');
+    $('music').checked = on;
+    state.engine.x.scp_set_music(on ? 1 : 0);
+    if (state.paused) state.audio.ctx.suspend().catch(() => {});
+    drawMenu();
+  } else if (id === 'exit') { closeMenu(false); renderer.xr.getSession()?.end(); }
+}
+
+// Reposition mode: aim an arc at the floor and pull the trigger to send the table there.
+// Right stick turns it, left stick up/down raises it, left stick left/right shrinks or grows it.
+const ARC_N = 48;
+const arcPos = new Float32Array(ARC_N * 3);
+const arcGeo = new THREE.BufferGeometry();
+arcGeo.setAttribute('position', new THREE.BufferAttribute(arcPos, 3));
+const arcLine = new THREE.Line(arcGeo, new THREE.LineBasicMaterial({ color: 0x37e0ff, toneMapped: false }));
+arcLine.frustumCulled = false;
+arcLine.visible = false;
+scene.add(arcLine);
+const ghost = new THREE.Group();
+ghost.visible = false;
+scene.add(ghost);
+let ghostRect = null;
+function buildGhost() {
+  ghost.clear();
+  const b = state.tableBounds;
+  const w = (b.maxX - b.minX) + 0.08, len = (b.maxZ - b.minZ) + 0.08;
+  const pts = [[-w / 2, -len / 2], [w / 2, -len / 2], [w / 2, len / 2], [-w / 2, len / 2]].map(([x, z]) => new THREE.Vector3(x, 0.01, z));
+  const mat = new THREE.LineBasicMaterial({ color: 0x37e0ff, toneMapped: false });
+  ghostRect = new THREE.LineLoop(new THREE.BufferGeometry().setFromPoints(pts), mat);
+  // Arrow showing which way the front (your side) faces
+  const arrow = new THREE.Line(new THREE.BufferGeometry().setFromPoints([
+    new THREE.Vector3(-0.08, 0.01, len / 2 - 0.02), new THREE.Vector3(0, 0.01, len / 2 + 0.12), new THREE.Vector3(0.08, 0.01, len / 2 - 0.02)]), mat);
+  const fill = new THREE.Mesh(new THREE.PlaneGeometry(w, len), new THREE.MeshBasicMaterial({ color: 0x37e0ff, transparent: true, opacity: 0.12, depthWrite: false, toneMapped: false }));
+  fill.rotation.x = -Math.PI / 2;
+  fill.position.y = 0.008;
+  ghost.add(ghostRect, arrow, fill);
+}
+
+function startReposition() {
+  if (!state.tableBounds) return;
+  if (!state.paused) togglePause(true);
+  buildGhost();
+  repo.active = true;
+  repo.hit = null;
+}
+function endReposition() {
+  repo.active = false;
+  arcLine.visible = false;
+  ghost.visible = false;
+  if (state.paused) togglePause(false);
+}
+
+const _o = new THREE.Vector3(), _dir = new THREE.Vector3(), _q3 = new THREE.Quaternion();
+const raycaster = new THREE.Raycaster();
+function updateMenuAndRepo(L, R) {
+  const dt = state.frameDt / 1000;
+  // Lasers show whenever there's something to point at
+  for (const hand of ['left', 'right']) {
+    const c = rayCtl[hand];
+    if (c) c.userData.laser.visible = vrMenu.open;
+  }
+
+  if (vrMenu.open) {
+    let hover = -1, hoverHand = null;
+    for (const [hand, h] of [['right', R], ['left', L]]) {
+      const c = rayCtl[hand];
+      if (!c || !h) continue;
+      c.getWorldPosition(_o); c.getWorldQuaternion(_q3);
+      _dir.set(0, 0, -1).applyQuaternion(_q3);
+      raycaster.set(_o, _dir);
+      const hit = raycaster.intersectObject(menuMesh, false)[0];
+      c.userData.laser.scale.z = hit ? hit.distance : 0.6;
+      if (!hit || hover >= 0) continue;
+      const py = (1 - hit.uv.y) * menuCanvas.height;
+      const i = Math.floor((py - TOP) / ROW);
+      if (i >= 0 && i < vrMenu.items.length && (py - TOP) % ROW < ROW - 12) { hover = i; hoverHand = hand; }
+    }
+    if (hover !== vrMenu.hover) {
+      vrMenu.hover = hover;
+      drawMenu();
+      const h = hoverHand === 'left' ? L : R;
+      if (hover >= 0 && h) pulse(h.src, 0.2, 10);
+    }
+    // Trigger on the hand doing the pointing activates the item
+    const h = hoverHand === 'left' ? L : hoverHand === 'right' ? R : null;
+    if (h && hover >= 0 && h.now.flip && !h.prev.flip) {
+      pulse(h.src, 0.6, 30);
+      menuAction(vrMenu.items[hover][0]);
+    }
+    return;
+  }
+
+  if (!repo.active) return;
+  // Sticks: right turns, left up/down raises, left left/right resizes
+  if (R && Math.abs(R.now.ax) > 0.2) turnTable(-R.now.ax * 1.4 * dt);
+  if (L && Math.abs(L.now.ay) > 0.2) adjustHeight(-L.now.ay * 0.35 * dt);
+  if (L && Math.abs(L.now.ax) > 0.2) adjustScale(Math.exp(L.now.ax * 0.7 * dt));
+
+  // Arc from whichever hand last pulled its trigger (right by default)
+  const aimHand = repo.aim && (repo.aim === 'left' ? L : R) ? repo.aim : R ? 'right' : L ? 'left' : null;
+  for (const [hand, h] of [['left', L], ['right', R]]) if (h && h.now.flip && !h.prev.flip && hand !== aimHand) repo.aim = hand;
+  const c = aimHand && rayCtl[aimHand];
+  const h = aimHand === 'left' ? L : R;
+  if (!c || !h) { arcLine.visible = ghost.visible = false; return; }
+  c.getWorldPosition(_o); c.getWorldQuaternion(_q3);
+  _dir.set(0, 0, -1).applyQuaternion(_q3);
+  const speed = 7, g = 9.8;
+  let n = 0, hit = null;
+  for (let i = 0; i < ARC_N; i++) {
+    const t = i * 0.03;
+    const x = _o.x + _dir.x * speed * t, y = _o.y + _dir.y * speed * t - 0.5 * g * t * t, z = _o.z + _dir.z * speed * t;
+    arcPos[n * 3] = x; arcPos[n * 3 + 1] = Math.max(y, 0); arcPos[n * 3 + 2] = z; n++;
+    if (y <= 0) { hit = { x, z }; break; }
+  }
+  arcGeo.attributes.position.needsUpdate = true;
+  arcGeo.setDrawRange(0, n);
+  arcLine.visible = true;
+  arcLine.material.color.setHex(hit ? 0x37e0ff : 0xff4d7d);
+  repo.hit = hit;
+  ghost.visible = !!hit;
+  if (hit) {
+    ghost.position.set(hit.x, 0, hit.z);
+    ghost.rotation.y = rig.rotation.y;
+    ghost.scale.setScalar(state.tableScale);
+    if (h.now.flip && !h.prev.flip) { placeTableAt(hit.x, hit.z); pulse(h.src, 0.6, 40); }
   }
 }
 
@@ -899,7 +1169,7 @@ function handPinch(e, down) {
 function updateHelpCard(dt) {
   const card = state.helpCard;
   if (!card) return;
-  const want = renderer.xr.isPresenting && (state.paused || !state.hasLaunched || state.gameOver);
+  const want = renderer.xr.isPresenting && !vrMenu.open && !repo.active && (state.paused || !state.hasLaunched || state.gameOver);
   const m = card.material;
   m.opacity = THREE.MathUtils.clamp(m.opacity + (want ? 1 : -1) * dt / 300, 0, 1);
   card.visible = m.opacity > 0.01;
@@ -911,7 +1181,9 @@ function updateSign() {
   const xr = renderer.xr.isPresenting;
   const handsOnly = xr && state.handsOnly;
   let text = '';
-  if (state.paused) text = 'Paused \u00b7 press B to carry on';
+  if (state.repo && state.repo.active) text = 'Trigger: send table \u00b7 Sticks: turn, raise, resize \u00b7 A: done';
+  else if (state.vrMenu && state.vrMenu.open) text = '';
+  else if (state.paused) text = 'Paused \u00b7 press B for the menu';
   else if (state.gameOver) text = 'Game over \u00b7 press Y for a new game';
   else if (state.ballInPlunger) text = handsOnly ? 'Pinch with both hands, then let go to launch' : 'Hold A or X, then let go to launch';
   sg.mesh.visible = xr && !!text;
@@ -995,6 +1267,7 @@ let acc = 0;
 function loop(time) {
   const dt = state.lastTime ? Math.min(time - state.lastTime, 100) : 16;
   state.lastTime = time;
+  state.frameDt = dt;
   if (state.needsRecenter && renderer.xr.isPresenting) {
     // Wait for a real head pose, then put the table in front of wherever the player is facing
     const p = new THREE.Vector3();
@@ -1026,7 +1299,7 @@ function loop(time) {
 }
 renderer.setAnimationLoop(loop);
 window.__scvr = state;
-state.debug = { THREE, gripByHand, updateGrab, sideInReach, rig, renderer };
+state.debug = { THREE, gripByHand, updateGrab, sideInReach, rig, renderer, rayCtl, openMenu, updateMenuAndRepo, menuMesh, menuCanvas, vrMenu, repo, ghost };
 
 // ---------------------------------------------------------------- flat-screen view
 // The camera frames the whole table on any screen shape; drag and scroll adjust from there
@@ -1135,6 +1408,8 @@ async function enterXR(mode) {
     state.mode = mode;
     document.body.classList.add('in-xr');
     session.addEventListener('end', () => {
+      if (vrMenu.open) closeMenu(false);
+      if (repo.active) endReposition();
       releaseAll();
       world.visible = true;
       scene.background = new THREE.Color(0x07060f);

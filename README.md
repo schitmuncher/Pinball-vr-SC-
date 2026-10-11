@@ -19,10 +19,10 @@ chrome sphere.
 | A or X (hold, then let go) | Plunger |
 | Grip with your hand on a side rail | Grab the table to move, lift and turn it |
 | Grip anywhere else | Nudge left / right (both grips: nudge up) |
-| B | Pause |
+| B or left-stick click | Menu: move, turn and resize the table, bring it to you, music, exit VR |
 | Y | New game |
 | Left stick up/down | Table height |
-| Left stick click | Move the table in front of you |
+| In the menu's move mode | Aim the arc and pull the trigger to send the table there; right stick turns it; left stick changes height (up/down) and size (left/right); A or B when done |
 
 If VR stutters when you turn your head, tick **VR performance mode** on the start screen.
 | Hand tracking | Pinch to flip, pinch with both hands to launch |
