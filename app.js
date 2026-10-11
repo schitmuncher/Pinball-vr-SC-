@@ -704,7 +704,10 @@ for (const [id, btn] of [['t-left', BTN.LeftFlipper], ['t-right', BTN.RightFlipp
   el.addEventListener('pointerdown', (e) => { e.preventDefault(); state.audio && state.audio.resume(); el.setPointerCapture(e.pointerId); press(btn, true); });
   el.addEventListener('pointerup', () => press(btn, false));
   el.addEventListener('pointercancel', () => press(btn, false));
+  el.addEventListener('contextmenu', (e) => e.preventDefault());
 }
+// Belt and braces for browsers that still start a selection on long press during play
+document.addEventListener('selectstart', (e) => { if (document.body.classList.contains('flat-play')) e.preventDefault(); });
 
 addEventListener('resize', () => {
   camera.aspect = innerWidth / innerHeight;
