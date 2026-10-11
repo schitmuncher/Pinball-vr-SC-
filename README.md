@@ -28,8 +28,8 @@ On a phone: tap the left or right side to flip, hold the middle to launch.
 
 ## Hosting on GitHub Pages
 
-The game is the static files at the root of this repo. In Settings → Pages, set the source to
-the `main` branch, root folder. No game data is included; each player loads their own copy.
+The game is the static files at the root of this repo. In Settings, Pages, set the source to the
+`main` branch and the root folder. No game data is included; each player loads their own copy.
 
 ## Rebuilding the engine
 
