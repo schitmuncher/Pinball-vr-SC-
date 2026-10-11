@@ -9,7 +9,7 @@ chrome sphere.
 ## Playing
 
 1. Open the page in the Meta Quest browser.
-2. Choose your game files once: the Pinball-on-Android APK, a zip of your Windows Pinball folder,
+2. Choose your game files once (music is off by default; tick Music to turn it on): the Pinball-on-Android APK, a zip of your Windows Pinball folder,
    or the files themselves (PINBALL.DAT plus the .WAV and .MID files). They stay in the browser.
 3. Press **Play in VR**, or **Play in your room** for passthrough.
 
@@ -22,6 +22,7 @@ chrome sphere.
 | Y | New game |
 | Left stick up/down | Table height |
 | Left stick click | Move the table in front of you |
+| Hand tracking | Pinch to flip, pinch with both hands to launch |
 
 On a computer: Z and / flip, Space is the plunger, X . and ↑ nudge, F2 new game, P pause.
 On a phone: tap the left or right side to flip, hold the middle to launch.

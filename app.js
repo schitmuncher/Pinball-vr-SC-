@@ -18,6 +18,7 @@ const state = {
   running: false, paused: false, lastTime: 0,
   texts: { 1: '', 2: '' }, panelDirty: true, panelTimer: 0,
   held: new Set(), padPrev: new Map(), mode: 'flat',
+  ballInPlunger: false, gameOver: false, needsRecenter: false, handPinch: new Set(),
   heightOffset: Number(localStorage.getItem('scvr-height') || 0),
 };
 
@@ -356,6 +357,19 @@ function buildCabinet(machine, b, cx, cz) {
   backbox.position.set(0, backY - depthBelow + sideH + 0.06 + bbH / 2, -len / 2 * Math.cos(TILT) - 0.09);
   machine.add(backbox);
 
+  // Status sign floating just past the lockdown bar: launch hint, pause, game over
+  const signCanvas = document.createElement('canvas');
+  signCanvas.width = 1024; signCanvas.height = 128;
+  const signTex = new THREE.CanvasTexture(signCanvas);
+  signTex.colorSpace = THREE.SRGBColorSpace;
+  const sign = new THREE.Mesh(new THREE.PlaneGeometry(0.44, 0.055),
+    new THREE.MeshBasicMaterial({ map: signTex, transparent: true, depthWrite: false, toneMapped: false }));
+  sign.position.set(0, frontY - depthBelow + sideH + 0.06, (len / 2) * Math.cos(TILT) + 0.02);
+  sign.rotation.x = -0.55;
+  sign.visible = false;
+  machine.add(sign);
+  state.sign = { mesh: sign, canvas: signCanvas, tex: signTex, text: '' };
+
   // Help card on the left of the cabinet
   const help = makeHelpCard();
   help.position.set(-w / 2 - 0.32, 0.1, 0.05);
@@ -367,11 +381,11 @@ function buildCabinet(machine, b, cx, cz) {
 
 function makeHelpCard() {
   const c = document.createElement('canvas');
-  c.width = 512; c.height = 400;
+  c.width = 512; c.height = 440;
   const x = c.getContext('2d');
   x.fillStyle = 'rgba(12,10,30,0.86)';
-  x.fillRect(0, 0, 512, 400);
-  x.strokeStyle = '#7f7cff'; x.lineWidth = 4; x.strokeRect(2, 2, 508, 396);
+  x.fillRect(0, 0, 512, 440);
+  x.strokeStyle = '#7f7cff'; x.lineWidth = 4; x.strokeRect(2, 2, 508, 436);
   x.fillStyle = '#fff'; x.font = 'bold 34px system-ui, sans-serif';
   x.fillText('Controls', 24, 50);
   x.font = '25px system-ui, sans-serif';
@@ -383,6 +397,7 @@ function makeHelpCard() {
     ['Y', 'New game'],
     ['Left stick ↑↓', 'Table height'],
     ['Left stick click', 'Move table in front of you'],
+    ['Hands only', 'Pinch to flip, both to launch'],
   ];
   lines.forEach(([a, b], i) => {
     x.fillStyle = '#b9b6ff'; x.fillText(a, 24, 100 + i * 42);
@@ -390,7 +405,7 @@ function makeHelpCard() {
   });
   const t = new THREE.CanvasTexture(c);
   t.colorSpace = THREE.SRGBColorSpace;
-  return new THREE.Mesh(new THREE.PlaneGeometry(0.4, 0.31), new THREE.MeshBasicMaterial({ map: t, transparent: true, toneMapped: false }));
+  return new THREE.Mesh(new THREE.PlaneGeometry(0.4, 0.344), new THREE.MeshBasicMaterial({ map: t, transparent: true, toneMapped: false }));
 }
 
 function placeMachineDefault() {
@@ -462,15 +477,26 @@ async function startEngine(files) {
       if (kind === 4 && value > highScore) { highScore = value; localStorage.setItem('scvr-highscore', String(value)); }
       if (kind === 9) { state.texts[value] = ''; state.panelDirty = true; }
       if (kind === 5 || kind === 6 || kind === 7) state.panelDirty = true;
+      if (kind === 3) state.ballInPlunger = value === 1;
+      if (kind === 2) state.gameOver = value === 2;
     },
   });
   const wasm = await WebAssembly.compileStreaming(fetch('engine.wasm'));
   await eng.load(wasm);
-  const music = localStorage.getItem('scvr-music') !== '0';
+  const music = localStorage.getItem('scvr-music') === '1';
   if (eng.init(music) !== 0) throw new Error('The game could not read PINBALL.DAT');
   eng.x.scp_hide_2d_balls(1);
   state.engine = eng;
   state.info = eng.info();
+  // A light buzz in both hands whenever the table makes a sound (bumpers, targets, kickers...)
+  let lastBuzz = 0;
+  audio.onSound = () => {
+    const now = performance.now();
+    if (now - lastBuzz < 60) return;
+    lastBuzz = now;
+    const session = renderer.xr.getSession();
+    if (session) for (const src of session.inputSources) pulse(src, 0.18, 18);
+  };
   buildMachine(state.info, eng);
   // The first start after loading only ends the attract light show; start a real game
   for (let i = 0; i < 10; i++) eng.frame(16);
@@ -490,7 +516,7 @@ function press(button, down) {
   }
 }
 
-function newGame() { state.engine.x.scp_new_game(); state.paused = false; state.texts = { 1: '', 2: '' }; state.panelDirty = true; }
+function newGame() { state.engine.x.scp_new_game(); state.paused = false; state.gameOver = false; state.texts = { 1: '', 2: '' }; state.panelDirty = true; }
 function togglePause() { state.engine.x.scp_pause(); state.paused = !!state.engine.x.scp_is_paused(); }
 
 // ---------------------------------------------------------------- XR controllers
@@ -499,7 +525,7 @@ function pollXR() {
   if (!session) return;
   for (const src of session.inputSources) {
     const gp = src.gamepad;
-    if (!gp || (src.handedness !== 'left' && src.handedness !== 'right')) continue;
+    if (!gp || src.hand || (src.handedness !== 'left' && src.handedness !== 'right')) continue;
     const left = src.handedness === 'left';
     const b = (i) => !!(gp.buttons[i] && (gp.buttons[i].pressed || gp.buttons[i].value > 0.5));
     const prev = state.padPrev.get(src.handedness) || {};
@@ -534,6 +560,46 @@ function pollXR() {
   }
 }
 
+function releaseAll() {
+  for (const key of [...state.held]) press(Number(key.slice(1)), false);
+  state.padPrev.clear();
+  state.handPinch.clear();
+}
+
+// Hand tracking: pinch with a hand to flip that side, pinch with both hands to pull the plunger
+function handPinch(e, down) {
+  const src = e.inputSource;
+  if (!src.hand || (src.handedness !== 'left' && src.handedness !== 'right')) return;
+  if (down) state.handPinch.add(src.handedness); else state.handPinch.delete(src.handedness);
+  state.audio.resume();
+  press(src.handedness === 'left' ? BTN.LeftFlipper : BTN.RightFlipper, down);
+  press(BTN.Plunger, state.handPinch.size === 2);
+}
+
+function updateSign() {
+  const sg = state.sign;
+  if (!sg) return;
+  const xr = renderer.xr.isPresenting;
+  const handsOnly = xr && [...(renderer.xr.getSession()?.inputSources || [])].some((s) => s.hand);
+  let text = '';
+  if (state.paused) text = 'Paused \u00b7 press B to carry on';
+  else if (state.gameOver) text = 'Game over \u00b7 press Y for a new game';
+  else if (state.ballInPlunger) text = handsOnly ? 'Pinch with both hands, then let go to launch' : 'Hold A or X, then let go to launch';
+  sg.mesh.visible = xr && !!text;
+  if (text === sg.text) return;
+  sg.text = text;
+  const x = sg.canvas.getContext('2d');
+  x.clearRect(0, 0, 1024, 128);
+  if (!text) return;
+  x.font = 'bold 54px system-ui, sans-serif';
+  const w = Math.min(1000, x.measureText(text).width + 70);
+  x.fillStyle = 'rgba(12,10,30,0.82)';
+  x.beginPath(); x.roundRect((1024 - w) / 2, 14, w, 100, 50); x.fill();
+  x.fillStyle = '#ecebff'; x.textAlign = 'center'; x.textBaseline = 'middle';
+  x.fillText(text, 512, 66);
+  sg.tex.needsUpdate = true;
+}
+
 function pulse(src, strength, ms) {
   const h = src.gamepad && src.gamepad.hapticActuators && src.gamepad.hapticActuators[0];
   if (h && h.pulse) h.pulse(strength, ms);
@@ -565,6 +631,12 @@ let acc = 0;
 function loop(time) {
   const dt = state.lastTime ? Math.min(time - state.lastTime, 100) : 16;
   state.lastTime = time;
+  if (state.needsRecenter && renderer.xr.isPresenting) {
+    // Wait for a real head pose, then put the table in front of wherever the player is facing
+    const p = new THREE.Vector3();
+    renderer.xr.getCamera().getWorldPosition(p);
+    if (p.lengthSq() > 0) { recenter(); state.needsRecenter = false; }
+  }
   if (state.running) {
     pollXR();
     if (!state.paused) {
@@ -577,6 +649,7 @@ function loop(time) {
       }
     }
     updateTable();
+    updateSign();
     state.panelTimer += dt;
     if (state.panelDirty || state.panelTimer > 100) { state.panelTimer = 0; state.panelDirty = false; drawPanel(); }
   }
@@ -652,6 +725,7 @@ async function enterXR(mode) {
     if (state.helpCard) state.helpCard.visible = true;
     document.body.classList.add('in-xr');
     session.addEventListener('end', () => {
+      releaseAll();
       world.visible = true;
       scene.background = new THREE.Color(0x07060f);
       state.mode = 'flat';
@@ -666,6 +740,14 @@ async function enterXR(mode) {
     const unlock = () => state.audio && state.audio.resume();
     session.addEventListener('selectstart', unlock);
     session.addEventListener('squeezestart', unlock);
+    session.addEventListener('selectstart', (e) => handPinch(e, true));
+    session.addEventListener('selectend', (e) => handPinch(e, false));
+    session.addEventListener('inputsourceschange', releaseAll);
+    if (session.updateTargetFrameRate && session.supportedFrameRates) {
+      const best = Math.max(...[...session.supportedFrameRates].filter((r) => r <= 90));
+      if (isFinite(best)) session.updateTargetFrameRate(best).catch(() => {});
+    }
+    state.needsRecenter = true;
     await renderer.xr.setSession(session);
   } catch (e) {
     showError('Could not start ' + (mode === 'immersive-ar' ? 'passthrough' : 'VR') + ': ' + e.message);
@@ -721,7 +803,7 @@ $('play-flat').addEventListener('click', () => { state.audio.resume(); document.
 $('menu-btn').addEventListener('click', () => document.body.classList.remove('flat-play'));
 $('new-game').addEventListener('click', newGame);
 $('players').addEventListener('change', (e) => { state.engine.x.scp_set_players(Number(e.target.value)); });
-$('music').checked = localStorage.getItem('scvr-music') !== '0';
+$('music').checked = localStorage.getItem('scvr-music') === '1';
 $('music').addEventListener('change', (e) => {
   localStorage.setItem('scvr-music', e.target.checked ? '1' : '0');
   state.engine && state.engine.x.scp_set_music(e.target.checked ? 1 : 0);
