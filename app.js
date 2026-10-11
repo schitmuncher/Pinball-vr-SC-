@@ -505,6 +505,7 @@ function pollXR() {
     const prev = state.padPrev.get(src.handedness) || {};
     const now = { flip: b(0) || b(1), plunge: b(4), menu: b(5), stick: b(3) };
 
+    if ((now.flip && !prev.flip) || (now.plunge && !prev.plunge)) state.audio.resume();
     press(left ? BTN.LeftFlipper : BTN.RightFlipper, now.flip);
     if (now.flip && !prev.flip) pulse(src, 0.35, 25);
 
@@ -661,6 +662,10 @@ async function enterXR(mode) {
     session.addEventListener('visibilitychange', () => {
       if (session.visibilityState !== 'visible' && !state.paused) togglePause();
     });
+    // Some browsers keep audio suspended until a press inside the headset; unlock on any controller press
+    const unlock = () => state.audio && state.audio.resume();
+    session.addEventListener('selectstart', unlock);
+    session.addEventListener('squeezestart', unlock);
     await renderer.xr.setSession(session);
   } catch (e) {
     showError('Could not start ' + (mode === 'immersive-ar' ? 'passthrough' : 'VR') + ': ' + e.message);

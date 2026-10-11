@@ -20,7 +20,7 @@ export class GameAudio {
     this.onSound = null;
   }
 
-  resume() { if (this.ctx.state !== 'running') this.ctx.resume(); }
+  resume() { if (this.ctx.state !== 'running') this.ctx.resume().catch(() => {}); }
 
   // Engine asks for sounds synchronously, so decode in the background and play once ready.
   loadSound(path, data) {
